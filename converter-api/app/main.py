@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import mimetypes
 import os
@@ -13,6 +14,7 @@ import threading
 import time
 from contextlib import asynccontextmanager, suppress
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -28,7 +30,7 @@ CHUNK_SIZE = 1024 * 1024
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(512 * 1024 * 1024)))
 CONVERSION_TIMEOUT_SECONDS = int(os.getenv("CONVERSION_TIMEOUT_SECONDS", "600"))
 MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_JOBS", "2"))
-DOWNLOAD_LINK_TTL_SECONDS = int(os.getenv("DOWNLOAD_LINK_TTL_SECONDS", "900"))
+DOWNLOAD_LINK_TTL_SECONDS = int(os.getenv("DOWNLOAD_LINK_TTL_SECONDS", "2592000"))
 TMP_ROOT = Path(os.getenv("CONVERTER_TMP_ROOT", "/var/lib/wechat-converter/tmp"))
 LIBREOFFICE_BIN = os.getenv("LIBREOFFICE_BIN", "libreoffice")
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
@@ -179,18 +181,51 @@ def _cleanup_expired_downloads() -> None:
     expiration_time = time.time() - DOWNLOAD_LINK_TTL_SECONDS
     for download_dir in TMP_ROOT.glob("download-*"):
         try:
-            if download_dir.is_dir() and download_dir.stat().st_mtime < expiration_time:
+            if not download_dir.is_dir():
+                continue
+            metadata_path = download_dir / "metadata.json"
+            created_at = _read_created_at(metadata_path)
+            last_activity = created_at if created_at is not None else download_dir.stat().st_mtime
+            if last_activity < expiration_time:
                 _remove_job_dir(download_dir)
         except OSError:
             logger.warning("Could not inspect temporary download %s", download_dir)
 
 
-def _store_download(output_path: Path, job_dir: Path, download_name: str) -> str:
+def _read_created_at(metadata_path: Path) -> float | None:
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        value = metadata.get("created_at")
+        if not isinstance(value, str):
+            return None
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _store_download(
+    output_path: Path,
+    job_dir: Path,
+    download_name: str,
+    client_id: str,
+    media_type: str,
+) -> str:
     token = secrets.token_urlsafe(32)
     download_dir = TMP_ROOT / f"download-{token}"
     download_dir.mkdir(mode=0o700)
     try:
         output_path.replace(download_dir / download_name)
+        stored_output = download_dir / download_name
+        metadata = {
+            "client_id": client_id or "anonymous",
+            "filename": download_name,
+            "media_type": media_type,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "size_bytes": stored_output.stat().st_size,
+        }
+        (download_dir / "metadata.json").write_text(
+            json.dumps(metadata, ensure_ascii=False), encoding="utf-8"
+        )
     except Exception:
         _remove_job_dir(download_dir)
         raise
@@ -207,7 +242,7 @@ def _resolve_download(token: str) -> tuple[Path, str, Path]:
         if time.time() - download_dir.stat().st_mtime > DOWNLOAD_LINK_TTL_SECONDS:
             _remove_job_dir(download_dir)
             raise HTTPException(status_code=404, detail="Download link not found or expired")
-        output_files = [path for path in download_dir.iterdir() if path.is_file()]
+        output_files = [path for path in download_dir.iterdir() if path.is_file() and path.name != "metadata.json"]
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Download link not found or expired") from exc
 
@@ -400,6 +435,7 @@ def test_endpoint() -> dict[str, object]:
 def document_to_pdf(
     file: UploadFile = File(...),
     response_mode: str = Form("file", description="Use 'link' for mini-program uploads"),
+    client_id: str = Form("anonymous", description="Stable client identifier for history"),
 ) -> FileResponse | JSONResponse:
     extension = _extension(file.filename)
     if extension not in DOCUMENT_EXTENSIONS:
@@ -420,7 +456,7 @@ def document_to_pdf(
         output_path, media_type = _convert_document(job_dir, input_path)
         download_name = f"{_safe_stem(file.filename)}.pdf"
         if response_mode == "link":
-            token = _store_download(output_path, job_dir, download_name)
+            token = _store_download(output_path, job_dir, download_name, client_id, media_type)
             return JSONResponse(
                 {
                     "download_url": f"/api/v1/download/{token}",
@@ -446,6 +482,7 @@ def media_convert(
     file: UploadFile = File(...),
     target_format: str = Form(..., description="Target format, for example mp3 or mp4"),
     response_mode: str = Form("file", description="Use 'link' for mini-program uploads"),
+    client_id: str = Form("anonymous", description="Stable client identifier for history"),
 ) -> FileResponse | JSONResponse:
     target = target_format.lower().strip().lstrip(".")
     if target not in MEDIA_PROFILES:
@@ -467,7 +504,7 @@ def media_convert(
         output_path, media_type = _convert_media(job_dir, input_path, target)
         download_name = f"{_safe_stem(file.filename)}.{target}"
         if response_mode == "link":
-            token = _store_download(output_path, job_dir, download_name)
+            token = _store_download(output_path, job_dir, download_name, client_id, media_type)
             return JSONResponse(
                 {
                     "download_url": f"/api/v1/download/{token}",
@@ -490,13 +527,62 @@ def media_convert(
 
 @app.get("/api/v1/download/{token}")
 def download_converted_file(token: str) -> FileResponse:
-    output_path, media_type, download_dir = _resolve_download(token)
-    return FileResponse(
-        output_path,
-        media_type=media_type,
-        filename=output_path.name,
-        background=BackgroundTask(_remove_job_dir, download_dir),
-    )
+    output_path, media_type, _ = _resolve_download(token)
+    return FileResponse(output_path, media_type=media_type, filename=output_path.name)
+
+
+@app.get("/api/v1/history/{client_id}")
+def conversion_history(client_id: str) -> dict[str, object]:
+    _cleanup_expired_downloads()
+    now = time.time()
+    records: list[dict[str, object]] = []
+    if not TMP_ROOT.exists():
+        return {"client_id": client_id, "files": [], "items": []}
+    for download_dir in TMP_ROOT.glob("download-*"):
+        if not download_dir.is_dir():
+            continue
+        token = download_dir.name.removeprefix("download-")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
+            continue
+        metadata_path = download_dir / "metadata.json"
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            continue
+        if metadata.get("client_id", "anonymous") != client_id:
+            continue
+        created_at_value = metadata.get("created_at")
+        created_at_timestamp = _read_created_at(metadata_path)
+        if not isinstance(created_at_value, str) or created_at_timestamp is None:
+            continue
+        output_path = next((path for path in download_dir.iterdir() if path.is_file() and path.name != "metadata.json"), None)
+        if output_path is None:
+            continue
+        size_bytes = int(metadata.get("size_bytes") or output_path.stat().st_size)
+        try:
+            created_text = datetime.fromisoformat(created_at_value.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            created_text = created_at_value
+        if size_bytes >= 1024 * 1024:
+            size_text = f"{size_bytes / (1024 * 1024):.1f} MB"
+        elif size_bytes >= 1024:
+            size_text = f"{size_bytes / 1024:.1f} KB"
+        else:
+            size_text = f"{size_bytes} B"
+        records.append({
+            "id": token,
+            "filename": str(metadata.get("filename") or output_path.name),
+            "download_url": f"/api/v1/download/{token}",
+            "media_type": str(metadata.get("media_type") or "application/octet-stream"),
+            "created_at": created_at_value,
+            "created_text": created_text,
+            "size_bytes": size_bytes,
+            "size_text": size_text,
+            "expires_in": max(0, int(DOWNLOAD_LINK_TTL_SECONDS - (now - created_at_timestamp))),
+        })
+    records.sort(key=lambda item: str(item["created_at"]), reverse=True)
+    history_items = records[:100]
+    return {"client_id": client_id, "files": history_items, "items": history_items}
 
 
 @app.get("/")
