@@ -243,23 +243,25 @@ def _db_initialize() -> bool:
                     if not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
                         continue
                     filename = str(metadata.get("filename") or output.name)
+                    cloud_saved = bool(metadata.get("cloud_saved", False))
+                    expires_at = None if cloud_saved else created_at + timedelta(seconds=DOWNLOAD_LINK_TTL_SECONDS)
                     cursor.execute(
                         "INSERT IGNORE INTO conversion_records "
                         "(token, client_id, source_filename, output_filename, media_type, status, cloud_saved, size_bytes, created_at, completed_at, expires_at) "
-                        "VALUES (%s, %s, %s, %s, %s, 'success', 1, %s, %s, %s, NULL)",
+                        "VALUES (%s, %s, %s, %s, %s, 'success', %s, %s, %s, %s, %s)",
                         (
                             token,
                             str(metadata.get("client_id") or "anonymous"),
                             filename,
                             filename,
                             str(metadata.get("media_type") or "application/octet-stream"),
+                            int(cloud_saved),
                             int(metadata.get("size_bytes") or output.stat().st_size),
                             created_at,
                             created_at,
+                            expires_at,
                         ),
                     )
-                    metadata["cloud_saved"] = True
-                    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
         return True
     except Exception:
         logger.exception("Could not initialize MySQL schema")
