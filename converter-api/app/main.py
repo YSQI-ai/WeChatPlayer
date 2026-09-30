@@ -54,20 +54,20 @@ database_ready = False
 
 CONVERSION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversion_records (
-    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    token VARCHAR(64) NULL UNIQUE,
-    client_id VARCHAR(128) NOT NULL,
-    source_filename VARCHAR(255) NOT NULL,
-    output_filename VARCHAR(255) NULL,
-    media_type VARCHAR(128) NULL,
-    target_format VARCHAR(32) NULL,
-    status VARCHAR(32) NOT NULL,
-    cloud_saved TINYINT(1) NOT NULL DEFAULT 0,
-    size_bytes BIGINT UNSIGNED NULL,
-    created_at DATETIME(6) NOT NULL,
-    completed_at DATETIME(6) NULL,
-    expires_at DATETIME(6) NULL,
-    error_message TEXT NULL,
+    output_filename VARCHAR(255) NULL COMMENT '最终输出文件名',
+    source_filename VARCHAR(255) NOT NULL COMMENT '原始上传文件名',
+    status VARCHAR(32) NOT NULL COMMENT 'processing、success 或 failed',
+    cloud_saved TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已保存到云盘',
+    size_bytes BIGINT UNSIGNED NULL COMMENT '输出文件大小（字节）',
+    media_type VARCHAR(128) NULL COMMENT '文件 MIME 类型',
+    target_format VARCHAR(32) NULL COMMENT '目标格式，例如 pdf、mp3',
+    client_id VARCHAR(128) NOT NULL COMMENT '设备标识',
+    created_at DATETIME(6) NOT NULL COMMENT '开始转换时间',
+    completed_at DATETIME(6) NULL COMMENT '转换完成时间',
+    expires_at DATETIME(6) NULL COMMENT '临时结果过期时间',
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT '数据库内部编号',
+    token VARCHAR(64) NULL UNIQUE COMMENT '下载令牌',
+    error_message TEXT NULL COMMENT '失败原因',
     INDEX idx_conversion_client_created (client_id, created_at),
     INDEX idx_conversion_cloud (client_id, cloud_saved)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -75,13 +75,13 @@ CREATE TABLE IF NOT EXISTS conversion_records (
 
 CLOUD_EVENT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS cloud_file_events (
-    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    token VARCHAR(64) NULL,
-    client_id VARCHAR(128) NOT NULL,
-    action VARCHAR(16) NOT NULL,
-    filename VARCHAR(255) NULL,
-    details JSON NULL,
-    created_at DATETIME(6) NOT NULL,
+    action VARCHAR(16) NOT NULL COMMENT 'CREATE、READ、UPDATE 或 DELETE',
+    filename VARCHAR(255) NULL COMMENT '操作时的文件名',
+    client_id VARCHAR(128) NOT NULL COMMENT '设备标识',
+    created_at DATETIME(6) NOT NULL COMMENT '操作时间',
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT '数据库内部编号',
+    token VARCHAR(64) NULL COMMENT '下载令牌',
+    details JSON NULL COMMENT '操作补充信息',
     INDEX idx_cloud_event_client_created (client_id, created_at),
     INDEX idx_cloud_event_token_created (token, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
