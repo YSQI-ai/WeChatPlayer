@@ -145,6 +145,33 @@ Page({
     });
   },
 
+  deleteHistoryFile(event) {
+    const token = event.currentTarget.dataset.id;
+    if (!token || !this.data.clientId) return;
+    wx.showModal({
+      title: '删除云端文件',
+      content: '删除后将无法通过历史记录再次下载，确认删除吗？',
+      confirmText: '删除',
+      confirmColor: '#c55d6b',
+      success: ({ confirm }) => {
+        if (!confirm) return;
+        wx.request({
+          url: apiUrl(`/api/v1/history/${encodeURIComponent(this.data.clientId)}/${encodeURIComponent(token)}`),
+          method: 'DELETE',
+          success: (response) => {
+            if (response.statusCode !== 200) {
+              wx.showToast({ title: responseMessage(response.data, '删除失败，请重试'), icon: 'none' });
+              return;
+            }
+            this.loadHistory();
+            wx.showToast({ title: '云端文件已删除', icon: 'success' });
+          },
+          fail: () => wx.showToast({ title: '网络连接失败，请重试', icon: 'none' })
+        });
+      }
+    });
+  },
+
   openSavedFile(event) {
     const { path: filePath, filename } = event.currentTarget.dataset;
     if (!filePath) return;
@@ -314,7 +341,13 @@ Page({
       this.downloadResult({ autoOpen: true });
       return;
     }
-    this.saveResult({ autoOpen: true });
+    wx.openDocument({
+      filePath: this.data.resultTempPath,
+      showMenu: true,
+      fileType: extensionOf(this.data.result.filename),
+      success: () => {},
+      fail: () => wx.showToast({ title: '无法打开此文件，请重新下载', icon: 'none' })
+    });
   },
 
   saveResult(options = {}) {

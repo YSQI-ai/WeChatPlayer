@@ -594,6 +594,22 @@ def conversion_history(client_id: str) -> dict[str, object]:
     return {"client_id": client_id, "files": history_items, "items": history_items}
 
 
+@app.delete("/api/v1/history/{client_id}/{token}")
+def delete_conversion(client_id: str, token: str) -> dict[str, str]:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
+        raise HTTPException(status_code=404, detail="Conversion not found")
+    download_dir = TMP_ROOT / f"download-{token}"
+    metadata_path = download_dir / "metadata.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=404, detail="Conversion not found") from exc
+    if metadata.get("client_id", "anonymous") != client_id:
+        raise HTTPException(status_code=404, detail="Conversion not found")
+    _remove_job_dir(download_dir)
+    return {"status": "deleted", "id": token}
+
+
 @app.get("/")
 def root() -> dict[str, str]:
     return {"service": SERVICE_NAME, "docs": "/docs", "test": "/api/v1/test"}
