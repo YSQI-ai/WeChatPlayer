@@ -157,8 +157,15 @@ class ConversionFailed(Exception):
 
 def _safe_stem(filename: str | None) -> str:
     raw_stem = Path(filename or "upload").stem
-    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", raw_stem).strip("._")
+    safe_stem = re.sub(r"[^\w.-]+", "_", raw_stem, flags=re.UNICODE).strip("._")
     return safe_stem[:120] or "converted"
+
+
+def _output_name(output_name: str | None, fallback: str | None, extension: str) -> str:
+    raw_name = (output_name or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
+    raw_stem = Path(raw_name).stem if raw_name else Path(fallback or "upload").stem
+    safe_stem = re.sub(r"[^\w.-]+", "_", raw_stem, flags=re.UNICODE).strip("._")
+    return f"{(safe_stem[:120] or 'converted')}.{extension}"
 
 
 def _extension(filename: str | None) -> str:
@@ -436,6 +443,7 @@ def document_to_pdf(
     file: UploadFile = File(...),
     response_mode: str = Form("file", description="Use 'link' for mini-program uploads"),
     client_id: str = Form("anonymous", description="Stable client identifier for history"),
+    output_name: str = Form("", description="Desired output filename without or with extension"),
 ) -> FileResponse | JSONResponse:
     extension = _extension(file.filename)
     if extension not in DOCUMENT_EXTENSIONS:
@@ -454,7 +462,7 @@ def document_to_pdf(
         input_path = job_dir / f"input.{extension}"
         _save_upload(file, input_path)
         output_path, media_type = _convert_document(job_dir, input_path)
-        download_name = f"{_safe_stem(file.filename)}.pdf"
+        download_name = _output_name(output_name, file.filename, "pdf")
         if response_mode == "link":
             token = _store_download(output_path, job_dir, download_name, client_id, media_type)
             return JSONResponse(
@@ -483,6 +491,7 @@ def media_convert(
     target_format: str = Form(..., description="Target format, for example mp3 or mp4"),
     response_mode: str = Form("file", description="Use 'link' for mini-program uploads"),
     client_id: str = Form("anonymous", description="Stable client identifier for history"),
+    output_name: str = Form("", description="Desired output filename without or with extension"),
 ) -> FileResponse | JSONResponse:
     target = target_format.lower().strip().lstrip(".")
     if target not in MEDIA_PROFILES:
@@ -502,7 +511,7 @@ def media_convert(
         input_path = job_dir / f"input.{input_extension}"
         _save_upload(file, input_path)
         output_path, media_type = _convert_media(job_dir, input_path, target)
-        download_name = f"{_safe_stem(file.filename)}.{target}"
+        download_name = _output_name(output_name, file.filename, target)
         if response_mode == "link":
             token = _store_download(output_path, job_dir, download_name, client_id, media_type)
             return JSONResponse(

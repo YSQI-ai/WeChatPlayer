@@ -6,6 +6,7 @@ const DOCUMENT_EXTENSIONS = ['doc', 'docx', 'odt', 'ott', 'rtf', 'txt'];
 const MEDIA_FORMATS = ['mp3', 'wav', 'flac', 'ogg', 'opus', 'aac', 'm4a', 'mp4', 'webm', 'mkv', 'mov', 'avi'];
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const VIDEO_FORMATS = ['mp4', 'webm', 'mkv', 'mov', 'avi'];
+const SAVED_FILES_KEY = 'converter_saved_files';
 
 function extensionOf(name = '') {
   const point = name.lastIndexOf('.');
@@ -15,6 +16,21 @@ function extensionOf(name = '') {
 function formatSize(bytes = 0) {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function stemOf(name = '') {
+  const value = String(name).split(/[\\/]/).pop() || '';
+  const point = value.lastIndexOf('.');
+  return (point > 0 ? value.slice(0, point) : value).trim();
+}
+
+function formatSavedTime(timestamp) {
+  if (!timestamp) return '保存时间未知';
+  const numeric = Number(timestamp);
+  const date = new Date(numeric > 100000000000 ? numeric : numeric * 1000);
+  if (Number.isNaN(date.getTime())) return '保存时间未知';
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function responseMessage(data, fallback) {
@@ -32,6 +48,8 @@ Page({
     formats: MEDIA_FORMATS,
     targetIndex: 0,
     file: null,
+    outputName: '',
+    outputNameError: '',
     uploading: false,
     progress: 0,
     result: null,
@@ -72,7 +90,9 @@ Page({
     wx.request({
       url: apiUrl('/api/v1/history/' + encodeURIComponent(this.data.clientId)),
       success: (response) => {
-        const files = response.statusCode === 200 && Array.isArray(response.data.files) ? response.data.files : [];
+        const files = response.statusCode === 200 && Array.isArray(response.data.files)
+          ? response.data.files
+          : response.statusCode === 200 && Array.isArray(response.data.items) ? response.data.items : [];
         this.setData({ historyFiles: files });
       },
       fail: () => this.setData({ historyFiles: [] }),
@@ -82,8 +102,24 @@ Page({
 
   loadSavedFiles() {
     if (typeof wx.getSavedFileList !== 'function') return;
+    const metadata = wx.getStorageSync(SAVED_FILES_KEY) || [];
+    const metadataByPath = metadata.reduce((map, item) => {
+      if (item && item.filePath) map[item.filePath] = item;
+      return map;
+    }, {});
     wx.getSavedFileList({
-      success: ({ fileList }) => this.setData({ savedFiles: fileList || [] }),
+      success: ({ fileList }) => {
+        const savedFiles = (fileList || []).map((item) => {
+          const saved = metadataByPath[item.filePath] || {};
+          return {
+            ...item,
+            filename: saved.filename || saved.originalName || item.filePath.split('/').pop() || '小程序文件',
+            sizeText: saved.sizeText || formatSize(item.size || 0),
+            createdText: saved.createdText || formatSavedTime(item.createTime)
+          };
+        });
+        this.setData({ savedFiles });
+      },
       fail: () => this.setData({ savedFiles: [] })
     });
   },
@@ -110,19 +146,35 @@ Page({
   },
 
   openSavedFile(event) {
-    const filePath = event.currentTarget.dataset.path;
+    const { path: filePath, filename } = event.currentTarget.dataset;
     if (!filePath) return;
     wx.openDocument({
       filePath,
       showMenu: true,
-      fileType: extensionOf(filePath),
+      fileType: extensionOf(filename || filePath),
       fail: () => wx.showToast({ title: '文件已不可用，请重新下载', icon: 'none' })
+    });
+  },
+
+  deleteSavedFile(event) {
+    const filePath = event.currentTarget.dataset.path;
+    if (!filePath) return;
+    wx.removeSavedFile({
+      filePath,
+      success: () => {
+        const metadata = (wx.getStorageSync(SAVED_FILES_KEY) || []).filter((item) => item.filePath !== filePath);
+        wx.setStorageSync(SAVED_FILES_KEY, metadata);
+        if (this.data.savedPath === filePath) this.setData({ savedPath: '' });
+        this.loadSavedFiles();
+        wx.showToast({ title: '已删除本地文件', icon: 'success' });
+      },
+      fail: () => wx.showToast({ title: '删除失败，请重试', icon: 'none' })
     });
   },
 
   chooseMode(event) {
     if (this.data.uploading) return;
-    this.setData({ mode: event.currentTarget.dataset.mode, file: null, result: null, resultKind: '', resultTempPath: '', savedPath: '' });
+    this.setData({ mode: event.currentTarget.dataset.mode, file: null, outputName: '', outputNameError: '', result: null, resultKind: '', resultTempPath: '', savedPath: '' });
   },
 
   chooseFile() {
@@ -144,6 +196,8 @@ Page({
         }
         this.setData({
           file: { ...file, sizeText: formatSize(file.size) },
+          outputName: stemOf(file.name),
+          outputNameError: '',
           result: null,
           resultKind: '',
           resultTempPath: '',
@@ -154,7 +208,12 @@ Page({
   },
 
   clearFile() {
-    if (!this.data.uploading) this.setData({ file: null, result: null, resultKind: '', resultTempPath: '', savedPath: '' });
+    if (!this.data.uploading) this.setData({ file: null, outputName: '', outputNameError: '', result: null, resultKind: '', resultTempPath: '', savedPath: '' });
+  },
+
+  changeOutputName(event) {
+    const outputName = (event.detail.value || '').slice(0, 120);
+    this.setData({ outputName, outputNameError: '' });
   },
 
   changeFormat(event) {
@@ -170,12 +229,23 @@ Page({
       wx.showToast({ title: '请先选择文件', icon: 'none' });
       return;
     }
+    const outputName = (this.data.outputName || '').trim();
+    if (!outputName) {
+      this.setData({ outputNameError: '请输入输出文件名' });
+      wx.showToast({ title: '请输入输出文件名', icon: 'none' });
+      return;
+    }
+    if (/[\\/:*?"<>|]/.test(outputName)) {
+      this.setData({ outputNameError: '文件名不能包含 \\/ : * ? " < > |' });
+      wx.showToast({ title: '文件名包含非法字符', icon: 'none' });
+      return;
+    }
     if (this.data.uploading) return;
 
     const endpoint = this.data.mode === 'document'
       ? '/api/v1/convert/document-to-pdf'
       : '/api/v1/convert/media';
-    const formData = { response_mode: 'link', client_id: this.data.clientId || 'anonymous' };
+    const formData = { response_mode: 'link', client_id: this.data.clientId || 'anonymous', output_name: outputName };
     if (this.data.mode === 'media') formData.target_format = this.data.formats[this.data.targetIndex];
 
     this.setData({ uploading: true, progress: 0, result: null, resultKind: '', resultTempPath: '', savedPath: '' });
@@ -196,6 +266,7 @@ Page({
           const resultKind = extension === 'pdf' ? 'pdf' : VIDEO_FORMATS.includes(extension) ? 'video' : 'audio';
           const expiresMinutes = Math.ceil(Number(result.expires_in || 900) / 60);
           this.setData({ result: { ...result, expiresText: `${expiresMinutes} 分钟` }, resultKind });
+          this.loadHistory();
         } catch (_) {
           wx.showToast({ title: '服务返回格式异常', icon: 'none' });
         }
@@ -235,31 +306,67 @@ Page({
   },
 
   openResult() {
+    if (this.data.savedPath) {
+      this.openSavedFile({ currentTarget: { dataset: { path: this.data.savedPath, filename: this.data.result && this.data.result.filename } } });
+      return;
+    }
     if (!this.data.resultTempPath) {
       this.downloadResult({ autoOpen: true });
       return;
     }
-    wx.openDocument({
-      filePath: this.data.resultTempPath,
-      showMenu: true,
-      fileType: extensionOf(this.data.result.filename),
-      fail: () => wx.showToast({ title: '无法打开此文件', icon: 'none' })
-    });
+    this.saveResult({ autoOpen: true });
   },
 
-  saveResult() {
+  saveResult(options = {}) {
+    if (this.data.savedPath) {
+      if (options.autoOpen) this.openSavedFile({ currentTarget: { dataset: { path: this.data.savedPath, filename: this.data.result && this.data.result.filename } } });
+      wx.showToast({ title: '文件已保存，可直接打开', icon: 'none' });
+      return;
+    }
     if (!this.data.resultTempPath) {
       this.downloadResult({ autoSave: true });
+      return;
+    }
+    const existing = (this.data.savedFiles || []).find((item) => item.filename === this.data.result.filename);
+    if (existing) {
+      this.setData({ savedPath: existing.filePath });
+      if (options.autoOpen) this.openSavedFile({ currentTarget: { dataset: { path: existing.filePath, filename: existing.filename } } });
+      wx.showToast({ title: '文件已存在，可直接打开', icon: 'none' });
       return;
     }
     wx.saveFile({
       tempFilePath: this.data.resultTempPath,
       success: ({ savedFilePath }) => {
+        const result = this.data.result || {};
+        const metadata = (wx.getStorageSync(SAVED_FILES_KEY) || []).filter((item) => item.filePath !== savedFilePath && item.filename !== result.filename);
+        metadata.push({
+          filePath: savedFilePath,
+          filename: result.filename || '小程序文件',
+          originalName: this.data.file && this.data.file.name,
+          size: result.size_bytes || 0,
+          sizeText: result.size_text || formatSize(result.size_bytes || 0),
+          createdAt: Date.now(),
+          createdText: formatSavedTime(Date.now())
+        });
+        wx.setStorageSync(SAVED_FILES_KEY, metadata);
         this.setData({ savedPath: savedFilePath });
         this.loadSavedFiles();
+        if (options.autoOpen) this.openSavedFile({ currentTarget: { dataset: { path: savedFilePath, filename: result.filename } } });
         wx.showToast({ title: '已保存到小程序文件', icon: 'success' });
       },
-      fail: () => wx.showToast({ title: '保存失败', icon: 'none' })
+      fail: (error) => {
+        if (error && error.errMsg && /exist|saved|duplicate/i.test(error.errMsg)) {
+          wx.showToast({ title: '文件已存在，可在“我的”中打开', icon: 'none' });
+          this.loadSavedFiles();
+          return;
+        }
+        wx.showToast({ title: '保存失败，请重试', icon: 'none' });
+      }
     });
+  },
+
+  deleteSavedResult() {
+    if (!this.data.savedPath) return;
+    this.deleteSavedFile({ currentTarget: { dataset: { path: this.data.savedPath } } });
   }
 });
