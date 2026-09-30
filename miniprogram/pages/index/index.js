@@ -60,6 +60,10 @@ Page({
     clientId: '',
     historyFiles: [],
     historyLoading: false,
+    cloudFiles: [],
+    cloudLoading: false,
+    renamingCloudId: '',
+    renameName: '',
     savedFiles: [],
     apiConfigured: /^https?:\/\/[^/]+$/.test(API_ORIGIN) && !API_ORIGIN.includes('YOUR_API_DOMAIN')
   },
@@ -80,6 +84,7 @@ Page({
     wx.pageScrollTo({ scrollTop: 0, duration: 220 });
     if (activeTab === 'profile' || activeTab === 'history') {
       this.loadHistory();
+      this.loadCloudFiles();
       this.loadSavedFiles();
     }
   },
@@ -97,6 +102,20 @@ Page({
       },
       fail: () => this.setData({ historyFiles: [] }),
       complete: () => this.setData({ historyLoading: false })
+    });
+  },
+
+  loadCloudFiles() {
+    if (!this.data.apiConfigured || !this.data.clientId) return;
+    this.setData({ cloudLoading: true });
+    wx.request({
+      url: apiUrl('/api/v1/cloud-files/' + encodeURIComponent(this.data.clientId)),
+      success: (response) => {
+        const files = response.statusCode === 200 && Array.isArray(response.data.files) ? response.data.files : [];
+        this.setData({ cloudFiles: files });
+      },
+      fail: () => this.setData({ cloudFiles: [] }),
+      complete: () => this.setData({ cloudLoading: false })
     });
   },
 
@@ -156,7 +175,7 @@ Page({
       success: ({ confirm }) => {
         if (!confirm) return;
         wx.request({
-          url: apiUrl(`/api/v1/history/${encodeURIComponent(this.data.clientId)}/${encodeURIComponent(token)}`),
+          url: apiUrl(`/api/v1/cloud-files/${encodeURIComponent(this.data.clientId)}/${encodeURIComponent(token)}`),
           method: 'DELETE',
           success: (response) => {
             if (response.statusCode !== 200) {
@@ -164,11 +183,75 @@ Page({
               return;
             }
             this.loadHistory();
+            this.loadCloudFiles();
             wx.showToast({ title: '云端文件已删除', icon: 'success' });
           },
           fail: () => wx.showToast({ title: '网络连接失败，请重试', icon: 'none' })
         });
       }
+    });
+  },
+
+  saveToCloud() {
+    const result = this.data.result;
+    if (!result || !result.download_url || !this.data.clientId) return;
+    if (result.cloud_saved) {
+      wx.showToast({ title: '文件已在云盘中', icon: 'none' });
+      return;
+    }
+    wx.request({
+      url: apiUrl(`/api/v1/cloud-files/${encodeURIComponent(this.data.clientId)}/${encodeURIComponent(result.download_url.split('/').pop())}`),
+      method: 'POST',
+      success: (response) => {
+        if (response.statusCode !== 200) {
+          wx.showToast({ title: responseMessage(response.data, '保存到云盘失败'), icon: 'none' });
+          return;
+        }
+        this.setData({ result: { ...result, cloud_saved: true } });
+        this.loadHistory();
+        this.loadCloudFiles();
+        wx.showToast({ title: '已保存到云盘', icon: 'success' });
+      },
+      fail: () => wx.showToast({ title: '网络连接失败，请重试', icon: 'none' })
+    });
+  },
+
+  startRenameCloud(event) {
+    const { id, filename } = event.currentTarget.dataset;
+    if (!id) return;
+    const point = String(filename || '').lastIndexOf('.');
+    this.setData({ renamingCloudId: id, renameName: point > 0 ? filename.slice(0, point) : filename });
+  },
+
+  changeRenameName(event) {
+    this.setData({ renameName: (event.detail.value || '').slice(0, 120) });
+  },
+
+  cancelRenameCloud() {
+    this.setData({ renamingCloudId: '', renameName: '' });
+  },
+
+  confirmRenameCloud(event) {
+    const token = event.currentTarget.dataset.id;
+    const filename = (this.data.renameName || '').trim();
+    if (!token || !filename) {
+      wx.showToast({ title: '请输入文件名', icon: 'none' });
+      return;
+    }
+    wx.request({
+      url: apiUrl(`/api/v1/cloud-files/${encodeURIComponent(this.data.clientId)}/${encodeURIComponent(token)}?filename=${encodeURIComponent(filename)}`),
+      method: 'PATCH',
+      success: (response) => {
+        if (response.statusCode !== 200) {
+          wx.showToast({ title: responseMessage(response.data, '重命名失败'), icon: 'none' });
+          return;
+        }
+        this.setData({ renamingCloudId: '', renameName: '' });
+        this.loadCloudFiles();
+        this.loadHistory();
+        wx.showToast({ title: '云盘文件已重命名', icon: 'success' });
+      },
+      fail: () => wx.showToast({ title: '网络连接失败，请重试', icon: 'none' })
     });
   },
 

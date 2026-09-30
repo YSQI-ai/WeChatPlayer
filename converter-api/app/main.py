@@ -14,14 +14,21 @@ import threading
 import time
 from contextlib import asynccontextmanager, suppress
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
+
+try:
+    import pymysql
+    from pymysql.cursors import DictCursor
+except ImportError:  # pragma: no cover - installed in the production virtualenv
+    pymysql = None
+    DictCursor = None
 
 
 SERVICE_NAME = "wechat-converter-api"
@@ -34,9 +41,51 @@ DOWNLOAD_LINK_TTL_SECONDS = int(os.getenv("DOWNLOAD_LINK_TTL_SECONDS", "2592000"
 TMP_ROOT = Path(os.getenv("CONVERTER_TMP_ROOT", "/var/lib/wechat-converter/tmp"))
 LIBREOFFICE_BIN = os.getenv("LIBREOFFICE_BIN", "libreoffice")
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
+MYSQL_HOST = os.getenv("MYSQL_HOST", "127.0.0.1")
+MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
+MYSQL_USER = os.getenv("MYSQL_USER", "wechat_converter")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
+MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "wechat_converter")
+MYSQL_CONNECT_TIMEOUT = int(os.getenv("MYSQL_CONNECT_TIMEOUT", "5"))
 
 logger = logging.getLogger(SERVICE_NAME)
 conversion_slots = threading.BoundedSemaphore(MAX_CONCURRENT_JOBS)
+database_ready = False
+
+CONVERSION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS conversion_records (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    token VARCHAR(64) NULL UNIQUE,
+    client_id VARCHAR(128) NOT NULL,
+    source_filename VARCHAR(255) NOT NULL,
+    output_filename VARCHAR(255) NULL,
+    media_type VARCHAR(128) NULL,
+    target_format VARCHAR(32) NULL,
+    status VARCHAR(32) NOT NULL,
+    cloud_saved TINYINT(1) NOT NULL DEFAULT 0,
+    size_bytes BIGINT UNSIGNED NULL,
+    created_at DATETIME(6) NOT NULL,
+    completed_at DATETIME(6) NULL,
+    expires_at DATETIME(6) NULL,
+    error_message TEXT NULL,
+    INDEX idx_conversion_client_created (client_id, created_at),
+    INDEX idx_conversion_cloud (client_id, cloud_saved)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""
+
+CLOUD_EVENT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS cloud_file_events (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    token VARCHAR(64) NULL,
+    client_id VARCHAR(128) NOT NULL,
+    action VARCHAR(16) NOT NULL,
+    filename VARCHAR(255) NULL,
+    details JSON NULL,
+    created_at DATETIME(6) NOT NULL,
+    INDEX idx_cloud_event_client_created (client_id, created_at),
+    INDEX idx_cloud_event_token_created (token, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+"""
 
 DOCUMENT_EXTENSIONS = {
     "doc",
@@ -155,6 +204,309 @@ class ConversionFailed(Exception):
     pass
 
 
+def _db_connect():
+    if pymysql is None or not MYSQL_PASSWORD:
+        return None
+    return pymysql.connect(
+        host=MYSQL_HOST,
+        port=MYSQL_PORT,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        database=MYSQL_DATABASE,
+        charset="utf8mb4",
+        connect_timeout=MYSQL_CONNECT_TIMEOUT,
+        autocommit=True,
+        cursorclass=DictCursor,
+    )
+
+
+def _db_initialize() -> bool:
+    connection = None
+    try:
+        connection = _db_connect()
+        if connection is None:
+            logger.warning("MySQL is not configured; database history is disabled")
+            return False
+        with connection.cursor() as cursor:
+            cursor.execute(CONVERSION_SCHEMA)
+            cursor.execute(CLOUD_EVENT_SCHEMA)
+            if TMP_ROOT.exists():
+                for download_dir in TMP_ROOT.glob("download-*"):
+                    metadata_path = download_dir / "metadata.json"
+                    try:
+                        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                        output = next(path for path in download_dir.iterdir() if path.is_file() and path.name != "metadata.json")
+                        created_at = datetime.fromisoformat(str(metadata["created_at"]).replace("Z", "+00:00")).replace(tzinfo=None)
+                    except (OSError, ValueError, TypeError, KeyError, StopIteration, json.JSONDecodeError):
+                        continue
+                    token = download_dir.name.removeprefix("download-")
+                    if not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
+                        continue
+                    filename = str(metadata.get("filename") or output.name)
+                    cursor.execute(
+                        "INSERT IGNORE INTO conversion_records "
+                        "(token, client_id, source_filename, output_filename, media_type, status, cloud_saved, size_bytes, created_at, completed_at, expires_at) "
+                        "VALUES (%s, %s, %s, %s, %s, 'success', 1, %s, %s, %s, NULL)",
+                        (
+                            token,
+                            str(metadata.get("client_id") or "anonymous"),
+                            filename,
+                            filename,
+                            str(metadata.get("media_type") or "application/octet-stream"),
+                            int(metadata.get("size_bytes") or output.stat().st_size),
+                            created_at,
+                            created_at,
+                        ),
+                    )
+                    metadata["cloud_saved"] = True
+                    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+        return True
+    except Exception:
+        logger.exception("Could not initialize MySQL schema")
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _db_create_conversion(client_id: str, source_filename: str, target_format: str | None) -> int | None:
+    connection = None
+    try:
+        connection = _db_connect()
+        if connection is None:
+            return None
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO conversion_records "
+                "(client_id, source_filename, target_format, status, created_at) "
+                "VALUES (%s, %s, %s, 'processing', %s)",
+                (client_id or "anonymous", source_filename or "upload", target_format, datetime.now(timezone.utc).replace(tzinfo=None)),
+            )
+            return int(cursor.lastrowid)
+    except Exception:
+        logger.exception("Could not create conversion database record")
+        return None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _db_complete_conversion(
+    record_id: int | None,
+    token: str | None,
+    output_filename: str,
+    media_type: str,
+    size_bytes: int | None,
+    cloud_saved: bool = False,
+) -> None:
+    if record_id is None:
+        return
+    connection = None
+    try:
+        connection = _db_connect()
+        if connection is None:
+            return
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        expires_at = None if cloud_saved else now + timedelta(seconds=DOWNLOAD_LINK_TTL_SECONDS)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE conversion_records SET token=%s, output_filename=%s, media_type=%s, "
+                "status='success', cloud_saved=%s, size_bytes=%s, completed_at=%s, expires_at=%s WHERE id=%s",
+                (token, output_filename, media_type, int(cloud_saved), size_bytes, now, expires_at, record_id),
+            )
+    except Exception:
+        logger.exception("Could not complete conversion database record")
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _db_fail_conversion(record_id: int | None, error_message: str) -> None:
+    if record_id is None:
+        return
+    connection = None
+    try:
+        connection = _db_connect()
+        if connection is None:
+            return
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE conversion_records SET status='failed', error_message=%s, completed_at=%s WHERE id=%s",
+                (error_message[:2000], datetime.now(timezone.utc).replace(tzinfo=None), record_id),
+            )
+    except Exception:
+        logger.exception("Could not mark conversion database record as failed")
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _db_record_event(client_id: str, token: str | None, action: str, filename: str | None, details: dict[str, object] | None = None) -> None:
+    connection = None
+    try:
+        connection = _db_connect()
+        if connection is None:
+            return
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO cloud_file_events (token, client_id, action, filename, details, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (token, client_id, action, filename, json.dumps(details or {}, ensure_ascii=False), datetime.now(timezone.utc).replace(tzinfo=None)),
+            )
+    except Exception:
+        logger.exception("Could not record cloud file event")
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _db_history(client_id: str, cloud_only: bool = False) -> list[dict[str, object]]:
+    connection = None
+    try:
+        connection = _db_connect()
+        if connection is None:
+            return []
+        clause = "AND cloud_saved=1" if cloud_only else ""
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, token, client_id, output_filename, media_type, status, cloud_saved, size_bytes, "
+                "created_at, completed_at, expires_at, error_message FROM conversion_records "
+                f"WHERE client_id=%s {clause} ORDER BY created_at DESC LIMIT 100",
+                (client_id,),
+            )
+            rows = cursor.fetchall()
+        records: list[dict[str, object]] = []
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        for row in rows:
+            created_at = row["created_at"]
+            created_text = created_at.strftime("%Y-%m-%d %H:%M") if created_at else ""
+            expires_at = row["expires_at"]
+            expires_in = None if row["cloud_saved"] else max(0, int((expires_at - now).total_seconds())) if expires_at else 0
+            token = row["token"]
+            records.append({
+                "id": token or str(row["id"]),
+                "record_id": row["id"],
+                "filename": row["output_filename"] or "转换失败",
+                "download_url": f"/api/v1/download/{token}" if token else "",
+                "media_type": row["media_type"] or "application/octet-stream",
+                "status": row["status"],
+                "cloud_saved": bool(row["cloud_saved"]),
+                "created_at": created_at.isoformat() if created_at else "",
+                "created_text": created_text,
+                "size_bytes": int(row["size_bytes"] or 0),
+                "size_text": _size_text(int(row["size_bytes"] or 0)),
+                "expires_in": expires_in,
+                "error_message": row["error_message"] or "",
+            })
+        if cloud_only:
+            for record in records:
+                _db_record_event(client_id, str(record["id"]), "READ", str(record["filename"]))
+        return records
+    except Exception:
+        logger.exception("Could not read conversion database records")
+        return []
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _db_find_record(client_id: str, token: str, cloud_only: bool = False) -> dict[str, object] | None:
+    connection = None
+    try:
+        connection = _db_connect()
+        if connection is None:
+            return None
+        clause = "AND cloud_saved=1" if cloud_only else ""
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, token, output_filename, media_type, cloud_saved, size_bytes FROM conversion_records "
+                f"WHERE client_id=%s AND token=%s {clause} LIMIT 1",
+                (client_id, token),
+            )
+            return cursor.fetchone()
+    except Exception:
+        logger.exception("Could not find conversion database record")
+        return None
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _db_mark_cloud_saved(client_id: str, token: str, filename: str) -> bool:
+    connection = None
+    try:
+        connection = _db_connect()
+        if connection is None:
+            return False
+        with connection.cursor() as cursor:
+              cursor.execute(
+                  "UPDATE conversion_records SET cloud_saved=1, output_filename=%s, expires_at=NULL "
+                  "WHERE client_id=%s AND token=%s AND status='success'",
+                  (filename, client_id, token),
+              )
+              if cursor.rowcount == 1:
+                  return True
+              cursor.execute(
+                  "SELECT 1 FROM conversion_records WHERE client_id=%s AND token=%s AND cloud_saved=1 LIMIT 1",
+                  (client_id, token),
+              )
+              return cursor.fetchone() is not None
+    except Exception:
+        logger.exception("Could not save cloud file database record")
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _db_rename_cloud(client_id: str, token: str, filename: str) -> bool:
+    connection = None
+    try:
+        connection = _db_connect()
+        if connection is None:
+            return False
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE conversion_records SET output_filename=%s WHERE client_id=%s AND token=%s AND cloud_saved=1",
+                (filename, client_id, token),
+            )
+            return cursor.rowcount == 1
+    except Exception:
+        logger.exception("Could not rename cloud file database record")
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _db_delete_cloud(client_id: str, token: str) -> bool:
+    connection = None
+    try:
+        connection = _db_connect()
+        if connection is None:
+            return False
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE conversion_records SET cloud_saved=0 WHERE client_id=%s AND token=%s AND cloud_saved=1",
+                (client_id, token),
+            )
+            return cursor.rowcount == 1
+    except Exception:
+        logger.exception("Could not delete cloud file database record")
+        return False
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def _size_text(size_bytes: int) -> str:
+    if size_bytes >= 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+    if size_bytes >= 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes} B"
+
+
 def _safe_stem(filename: str | None) -> str:
     raw_stem = Path(filename or "upload").stem
     safe_stem = re.sub(r"[^\w.-]+", "_", raw_stem, flags=re.UNICODE).strip("._")
@@ -191,6 +543,12 @@ def _cleanup_expired_downloads() -> None:
             if not download_dir.is_dir():
                 continue
             metadata_path = download_dir / "metadata.json"
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                if metadata.get("cloud_saved"):
+                    continue
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                pass
             created_at = _read_created_at(metadata_path)
             last_activity = created_at if created_at is not None else download_dir.stat().st_mtime
             if last_activity < expiration_time:
@@ -227,6 +585,7 @@ def _store_download(
             "client_id": client_id or "anonymous",
             "filename": download_name,
             "media_type": media_type,
+            "cloud_saved": False,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "size_bytes": stored_output.stat().st_size,
         }
@@ -246,7 +605,12 @@ def _resolve_download(token: str) -> tuple[Path, str, Path]:
 
     download_dir = TMP_ROOT / f"download-{token}"
     try:
-        if time.time() - download_dir.stat().st_mtime > DOWNLOAD_LINK_TTL_SECONDS:
+        metadata_path = download_dir / "metadata.json"
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            metadata = {}
+        if not metadata.get("cloud_saved") and time.time() - download_dir.stat().st_mtime > DOWNLOAD_LINK_TTL_SECONDS:
             _remove_job_dir(download_dir)
             raise HTTPException(status_code=404, detail="Download link not found or expired")
         output_files = [path for path in download_dir.iterdir() if path.is_file() and path.name != "metadata.json"]
@@ -389,6 +753,8 @@ async def _cleanup_downloads_periodically() -> None:
 
 @asynccontextmanager
 async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
+    global database_ready
+    database_ready = _db_initialize()
     cleanup_task = asyncio.create_task(_cleanup_downloads_periodically())
     try:
         yield
@@ -420,6 +786,7 @@ def health() -> dict[str, object]:
         "service": SERVICE_NAME,
         "version": SERVICE_VERSION,
         "max_upload_bytes": MAX_UPLOAD_BYTES,
+        "database": "mysql" if database_ready else "unavailable",
     }
 
 
@@ -456,6 +823,7 @@ def document_to_pdf(
     if not conversion_slots.acquire(blocking=False):
         raise HTTPException(status_code=429, detail="Too many conversions in progress")
 
+    record_id = _db_create_conversion(client_id, file.filename or "upload", "pdf")
     job_dir: Path | None = None
     try:
         job_dir = _new_job_dir()
@@ -463,21 +831,27 @@ def document_to_pdf(
         _save_upload(file, input_path)
         output_path, media_type = _convert_document(job_dir, input_path)
         download_name = _output_name(output_name, file.filename, "pdf")
+        size_bytes = output_path.stat().st_size
         if response_mode == "link":
             token = _store_download(output_path, job_dir, download_name, client_id, media_type)
+            _db_complete_conversion(record_id, token, download_name, media_type, size_bytes)
             return JSONResponse(
                 {
                     "download_url": f"/api/v1/download/{token}",
                     "filename": download_name,
                     "media_type": media_type,
                     "expires_in": DOWNLOAD_LINK_TTL_SECONDS,
+                    "cloud_saved": False,
                 }
             )
+        _db_complete_conversion(record_id, None, download_name, media_type, size_bytes)
         return _file_response(output_path, media_type, download_name, job_dir)
     except (UploadTooLarge, ConversionFailed, ValueError) as exc:
+        _db_fail_conversion(record_id, str(exc))
         _handle_failure(job_dir, exc)
         raise AssertionError("unreachable")
     except Exception as exc:
+        _db_fail_conversion(record_id, str(exc))
         _handle_failure(job_dir, exc)
         raise AssertionError("unreachable")
     finally:
@@ -504,6 +878,7 @@ def media_convert(
     if not conversion_slots.acquire(blocking=False):
         raise HTTPException(status_code=429, detail="Too many conversions in progress")
 
+    record_id = _db_create_conversion(client_id, file.filename or "upload", target)
     job_dir: Path | None = None
     try:
         job_dir = _new_job_dir()
@@ -512,21 +887,27 @@ def media_convert(
         _save_upload(file, input_path)
         output_path, media_type = _convert_media(job_dir, input_path, target)
         download_name = _output_name(output_name, file.filename, target)
+        size_bytes = output_path.stat().st_size
         if response_mode == "link":
             token = _store_download(output_path, job_dir, download_name, client_id, media_type)
+            _db_complete_conversion(record_id, token, download_name, media_type, size_bytes)
             return JSONResponse(
                 {
                     "download_url": f"/api/v1/download/{token}",
                     "filename": download_name,
                     "media_type": media_type,
                     "expires_in": DOWNLOAD_LINK_TTL_SECONDS,
+                    "cloud_saved": False,
                 }
             )
+        _db_complete_conversion(record_id, None, download_name, media_type, size_bytes)
         return _file_response(output_path, media_type, download_name, job_dir)
     except (UploadTooLarge, ConversionFailed, ValueError) as exc:
+        _db_fail_conversion(record_id, str(exc))
         _handle_failure(job_dir, exc)
         raise AssertionError("unreachable")
     except Exception as exc:
+        _db_fail_conversion(record_id, str(exc))
         _handle_failure(job_dir, exc)
         raise AssertionError("unreachable")
     finally:
@@ -536,12 +917,21 @@ def media_convert(
 
 @app.get("/api/v1/download/{token}")
 def download_converted_file(token: str) -> FileResponse:
-    output_path, media_type, _ = _resolve_download(token)
+    output_path, media_type, download_dir = _resolve_download(token)
+    try:
+        metadata = json.loads((download_dir / "metadata.json").read_text(encoding="utf-8"))
+        if metadata.get("cloud_saved"):
+            _db_record_event(str(metadata.get("client_id") or "anonymous"), token, "READ", str(metadata.get("filename") or output_path.name))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
     return FileResponse(output_path, media_type=media_type, filename=output_path.name)
 
 
 @app.get("/api/v1/history/{client_id}")
 def conversion_history(client_id: str) -> dict[str, object]:
+    if database_ready:
+        history_items = _db_history(client_id)
+        return {"client_id": client_id, "files": history_items, "items": history_items}
     _cleanup_expired_downloads()
     now = time.time()
     records: list[dict[str, object]] = []
@@ -596,6 +986,83 @@ def conversion_history(client_id: str) -> dict[str, object]:
 
 @app.delete("/api/v1/history/{client_id}/{token}")
 def delete_conversion(client_id: str, token: str) -> dict[str, str]:
+    return delete_cloud_file(client_id, token)
+
+
+@app.get("/api/v1/cloud-files/{client_id}")
+def cloud_files(client_id: str) -> dict[str, object]:
+    if not database_ready:
+        return {"client_id": client_id, "files": [], "items": []}
+    files = _db_history(client_id, cloud_only=True)
+    return {"client_id": client_id, "files": files, "items": files}
+
+
+@app.post("/api/v1/cloud-files/{client_id}/{token}")
+def save_cloud_file(client_id: str, token: str) -> dict[str, object]:
+    if not database_ready:
+        raise HTTPException(status_code=503, detail="MySQL database is unavailable")
+    record = _db_find_record(client_id, token)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Conversion not found")
+    output_path, _, download_dir = _resolve_download(token)
+    filename = str(record.get("output_filename") or output_path.name)
+    metadata_path = download_dir / "metadata.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["cloud_saved"] = True
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail="Could not update cloud file metadata") from exc
+    if not _db_mark_cloud_saved(client_id, token, filename):
+        raise HTTPException(status_code=500, detail="Could not save cloud file record")
+    _db_record_event(client_id, token, "CREATE", filename)
+    return {"status": "saved", "filename": filename, "cloud_saved": True}
+
+
+@app.patch("/api/v1/cloud-files/{client_id}/{token}")
+def rename_cloud_file(client_id: str, token: str, filename: str = Query(..., min_length=1, max_length=120)) -> dict[str, object]:
+    if not database_ready:
+        raise HTTPException(status_code=503, detail="MySQL database is unavailable")
+    record = _db_find_record(client_id, token, cloud_only=True)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Cloud file not found")
+    old_path, _, download_dir = _resolve_download(token)
+    new_name = _output_name(filename, old_path.name, old_path.suffix.lstrip("."))
+    new_path = download_dir / new_name
+    try:
+        if new_path != old_path:
+            old_path.rename(new_path)
+        metadata_path = download_dir / "metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["filename"] = new_name
+        metadata["cloud_saved"] = True
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail="Could not rename cloud file") from exc
+    if not _db_rename_cloud(client_id, token, new_name):
+        raise HTTPException(status_code=500, detail="Could not update cloud file record")
+    _db_record_event(client_id, token, "UPDATE", new_name, {"previous_name": record.get("output_filename")})
+    return {"status": "updated", "filename": new_name, "cloud_saved": True}
+
+
+@app.delete("/api/v1/cloud-files/{client_id}/{token}")
+def delete_cloud_file(client_id: str, token: str) -> dict[str, str]:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
+        raise HTTPException(status_code=404, detail="Cloud file not found")
+    if database_ready:
+        record = _db_find_record(client_id, token, cloud_only=True)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Cloud file not found")
+        if not _db_delete_cloud(client_id, token):
+            raise HTTPException(status_code=500, detail="Could not delete cloud file record")
+        _db_record_event(client_id, token, "DELETE", str(record.get("output_filename") or ""))
+    else:
+        raise HTTPException(status_code=503, detail="MySQL database is unavailable")
+    _remove_job_dir(TMP_ROOT / f"download-{token}")
+    return {"status": "deleted", "id": token}
+
+
+def _legacy_delete_conversion(client_id: str, token: str) -> dict[str, str]:
     if not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
         raise HTTPException(status_code=404, detail="Conversion not found")
     download_dir = TMP_ROOT / f"download-{token}"
