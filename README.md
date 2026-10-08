@@ -5,7 +5,7 @@
 ## 功能概览
 
 - 文档转 PDF：支持 `doc`、`docx`、`odt`、`ott`、`rtf`、`txt`。
-- 媒体格式转换：支持 `mp3`、`wav`、`flac`、`ogg`、`opus`、`aac`、`m4a`、`mp4`、`webm`、`mkv`、`mov`、`avi`。
+- 媒体格式转换：支持 `mp3`、`wav`、`flac`、`ogg`、`opus`、`aac`、`m4a`、`mp4`、`webm`、`mkv`、`mov`、`avi`；可将 `mflac`、`ncm` 解密后转为这些格式。
 - 健康检查和部署自检接口。
 - 每个请求使用独立临时目录，响应完成后自动清理上传文件和输出文件。
 - 上传大小、转换超时、并发任务数、临时目录和 CORS 来源均可通过环境变量配置。
@@ -91,7 +91,7 @@ curl -f -F "file=@sample.mp4" -F "target_format=mp3" \
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `MAX_UPLOAD_BYTES` | `536870912` | 单个上传文件最大字节数，默认 512 MiB |
+| `MAX_UPLOAD_BYTES` | `1073741824` | 单个上传文件最大字节数，默认 1 GiB |
 | `CONVERSION_TIMEOUT_SECONDS` | `600` | 单次转换超时时间 |
 | `MAX_CONCURRENT_JOBS` | `2` | 同时执行的最大转换任务数 |
 | `CONVERTER_TMP_ROOT` | `/var/lib/wechat-converter/tmp` | 转换任务临时目录 |
@@ -160,4 +160,3 @@ sudo systemctl reload nginx
 ## 开发说明
 
 当前仓库主要包含后端转换 API，尚未提供自动化测试套件。修改转换参数或部署配置后，建议至少使用 `/api/v1/test`、`/api/v1/health` 以及实际样例文件完成冒烟验证。
-

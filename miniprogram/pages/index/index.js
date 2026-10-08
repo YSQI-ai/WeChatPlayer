@@ -4,7 +4,8 @@ const apiUrl = (path) => /^https?:\/\//.test(path) ? path : API_ORIGIN + path;
 
 const DOCUMENT_EXTENSIONS = ['doc', 'docx', 'odt', 'ott', 'rtf', 'txt'];
 const MEDIA_FORMATS = ['mp3', 'wav', 'flac', 'ogg', 'opus', 'aac', 'm4a', 'mp4', 'webm', 'mkv', 'mov', 'avi'];
-const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const MEDIA_INPUT_EXTENSIONS = ['mp3', 'wav', 'flac', 'ogg', 'opus', 'aac', 'm4a', 'mp4', 'webm', 'mkv', 'mov', 'avi', 'mflac', 'ncm'];
+const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
 const VIDEO_FORMATS = ['mp4', 'webm', 'mkv', 'mov', 'avi'];
 const SAVED_FILES_KEY = 'converter_saved_files';
 
@@ -290,23 +291,29 @@ Page({
   chooseFile() {
     if (this.data.uploading) return;
     const options = { count: 1, type: 'file' };
-    if (this.data.mode === 'document') options.extension = DOCUMENT_EXTENSIONS;
+    options.extension = this.data.mode === 'document' ? DOCUMENT_EXTENSIONS : MEDIA_INPUT_EXTENSIONS;
 
     wx.chooseMessageFile({
       ...options,
       success: ({ tempFiles }) => {
         const file = tempFiles[0];
         if (file.size > MAX_UPLOAD_BYTES) {
-          wx.showToast({ title: '文件超过小程序单次上传限制（10 MB）', icon: 'none' });
+          wx.showToast({ title: '文件超过单次上传限制（1 GB）', icon: 'none' });
           return;
         }
         if (this.data.mode === 'document' && !DOCUMENT_EXTENSIONS.includes(extensionOf(file.name))) {
           wx.showToast({ title: '暂不支持此文档格式', icon: 'none' });
           return;
         }
+        if (this.data.mode === 'media' && !MEDIA_INPUT_EXTENSIONS.includes(extensionOf(file.name))) {
+          wx.showToast({ title: '暂不支持此音视频格式', icon: 'none' });
+          return;
+        }
+        const selectedExtension = extensionOf(file.name);
         this.setData({
           file: { ...file, sizeText: formatSize(file.size) },
           outputName: stemOf(file.name),
+          targetIndex: ['mflac', 'ncm'].includes(selectedExtension) ? MEDIA_FORMATS.indexOf('flac') : this.data.targetIndex,
           outputNameError: '',
           result: null,
           resultKind: '',

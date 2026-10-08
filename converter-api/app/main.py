@@ -34,13 +34,15 @@ except ImportError:  # pragma: no cover - installed in the production virtualenv
 SERVICE_NAME = "wechat-converter-api"
 SERVICE_VERSION = "1.0.0"
 CHUNK_SIZE = 1024 * 1024
-MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(512 * 1024 * 1024)))
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(1024 * 1024 * 1024)))
 CONVERSION_TIMEOUT_SECONDS = int(os.getenv("CONVERSION_TIMEOUT_SECONDS", "600"))
 MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_JOBS", "2"))
 DOWNLOAD_LINK_TTL_SECONDS = int(os.getenv("DOWNLOAD_LINK_TTL_SECONDS", "2592000"))
 TMP_ROOT = Path(os.getenv("CONVERTER_TMP_ROOT", "/var/lib/wechat-converter/tmp"))
 LIBREOFFICE_BIN = os.getenv("LIBREOFFICE_BIN", "libreoffice")
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
+QMC2_BIN = os.getenv("QMC2_BIN", "/opt/wechat-converter-api/bin/QMC2-decoder")
+NCDUMP_BIN = os.getenv("NCDUMP_BIN", "/opt/wechat-converter-api/bin/ncmdump")
 MYSQL_HOST = os.getenv("MYSQL_HOST", "127.0.0.1")
 MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
 MYSQL_USER = os.getenv("MYSQL_USER", "wechat_converter")
@@ -194,6 +196,9 @@ MEDIA_PROFILES: dict[str, dict[str, object]] = {
         "media_type": "video/x-msvideo",
     },
 }
+
+ENCRYPTED_MEDIA_EXTENSIONS = {"mflac", "ncm"}
+MEDIA_INPUT_EXTENSIONS = set(MEDIA_PROFILES) | ENCRYPTED_MEDIA_EXTENSIONS
 
 
 class UploadTooLarge(Exception):
@@ -697,7 +702,16 @@ def _convert_media(job_dir: Path, input_path: Path, target_format: str) -> tuple
     profile = MEDIA_PROFILES.get(target)
     if profile is None:
         raise ValueError(f"Unsupported target format: {target}")
+    source_path = input_path
+    input_extension = _extension(input_path.name)
+    if input_extension in ENCRYPTED_MEDIA_EXTENSIONS:
+        source_path = _decode_encrypted_media(job_dir, input_path, input_extension)
     output_path = job_dir / f"{_safe_stem(input_path.name)}.{target}"
+    if target == "flac" and _extension(source_path.name) == "flac":
+        shutil.copyfile(source_path, output_path)
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            raise ConversionFailed("The encrypted media converter did not produce an output file")
+        return output_path, str(profile["media_type"])
     command = [
         FFMPEG_BIN,
         "-y",
@@ -705,7 +719,7 @@ def _convert_media(job_dir: Path, input_path: Path, target_format: str) -> tuple
         "-loglevel",
         "error",
         "-i",
-        str(input_path),
+        str(source_path),
         "-map_metadata",
         "0",
         *profile["args"],  # type: ignore[index]
@@ -715,6 +729,26 @@ def _convert_media(job_dir: Path, input_path: Path, target_format: str) -> tuple
     if not output_path.exists() or output_path.stat().st_size == 0:
         raise ConversionFailed("The media converter did not produce an output file")
     return output_path, str(profile["media_type"])
+
+
+def _decode_encrypted_media(job_dir: Path, input_path: Path, input_extension: str) -> Path:
+    decoded_dir = job_dir / "decoded"
+    decoded_dir.mkdir()
+    if input_extension == "mflac":
+        output_path = decoded_dir / f"{_safe_stem(input_path.name)}.flac"
+        _run_command([QMC2_BIN, str(input_path), str(output_path)], job_dir)
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            raise ConversionFailed("The MFLAC decoder did not produce an output file")
+        return output_path
+
+    _run_command([NCDUMP_BIN, str(input_path), "-o", str(decoded_dir)], job_dir)
+    candidates = [
+        path for path in decoded_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in {".flac", ".mp3"}
+    ]
+    if len(candidates) != 1 or candidates[0].stat().st_size == 0:
+        raise ConversionFailed("The NCM decoder did not produce a single audio file")
+    return candidates[0]
 
 
 def _file_response(output_path: Path, media_type: str, download_name: str, job_dir: Path) -> FileResponse:
@@ -803,6 +837,7 @@ def test_endpoint() -> dict[str, object]:
         "media_endpoint": "POST /api/v1/convert/media",
         "document_extensions": sorted(DOCUMENT_EXTENSIONS),
         "media_formats": sorted(MEDIA_PROFILES),
+        "media_input_extensions": sorted(MEDIA_INPUT_EXTENSIONS),
         "max_upload_bytes": MAX_UPLOAD_BYTES,
     }
 
@@ -879,6 +914,12 @@ def media_convert(
         )
     if response_mode not in {"file", "link"}:
         raise HTTPException(status_code=400, detail="response_mode must be 'file' or 'link'")
+    input_extension = _extension(file.filename)
+    if input_extension not in MEDIA_INPUT_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported media type. Allowed: {', '.join(sorted(MEDIA_INPUT_EXTENSIONS))}",
+        )
     if not conversion_slots.acquire(blocking=False):
         raise HTTPException(status_code=429, detail="Too many conversions in progress")
 
@@ -886,7 +927,7 @@ def media_convert(
     job_dir: Path | None = None
     try:
         job_dir = _new_job_dir()
-        input_extension = _extension(file.filename) or "input"
+        input_extension = input_extension or "input"
         input_path = job_dir / f"input.{input_extension}"
         _save_upload(file, input_path)
         output_path, media_type = _convert_media(job_dir, input_path, target)
