@@ -1,4 +1,3 @@
-// Temporary development endpoint. Replace with the HTTPS API domain before release.
-const API_BASE_URL = 'http://8.136.99.105';
+const API_BASE_URL = 'https://api.yssqi.ccwu.cc';
 
 module.exports = { API_BASE_URL };

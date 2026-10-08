@@ -6,3 +6,4 @@ __pycache__/
 .mypy_cache/
 *.log
 project.private.config.json
+*-privkey.pem
