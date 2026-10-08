@@ -776,7 +776,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins(),
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -842,6 +842,8 @@ def document_to_pdf(
                     "download_url": f"/api/v1/download/{token}",
                     "filename": download_name,
                     "media_type": media_type,
+                    "size_bytes": size_bytes,
+                    "size_text": _size_text(size_bytes),
                     "expires_in": DOWNLOAD_LINK_TTL_SECONDS,
                     "cloud_saved": False,
                 }
@@ -898,6 +900,8 @@ def media_convert(
                     "download_url": f"/api/v1/download/{token}",
                     "filename": download_name,
                     "media_type": media_type,
+                    "size_bytes": size_bytes,
+                    "size_text": _size_text(size_bytes),
                     "expires_in": DOWNLOAD_LINK_TTL_SECONDS,
                     "cloud_saved": False,
                 }
