@@ -182,6 +182,20 @@ Adminer 使用 MySQL/MariaDB、Server 1Panel-mysql-BHnV、Database/Username wech
 - 公开候选工具需要桌面 QQ 音乐进程/Frida 或额外 ekey，不能直接作为当前无交互 FastAPI 后端的替换方案；未替换线上 QMC2。
 - 公网 HTTPS 探测曾出现 TLS 连接被重置；SSH 侧 systemd 和 `http://127.0.0.1:18080/api/v1/health` 正常，公网网关问题需单独排查。
 
+### 9.2 2026-10-09 Linux MFLAC 独立解码器
+
+- 已在工作区新建 `mflac-linux-decoder/`，当前包含 `qmc_mflac.py` 和 `README.md`。
+- `qmc_mflac.py` 为 Python 3 标准库实现，可在 Linux 上运行，不依赖 pip、FFmpeg 或网络服务；支持 QTag、旧版 PC EKey、PC MusicEx 尾部解析、Tencent TEA EKey 解包、QMC Map 和改造版 RC4 流解密，并按 4 MiB 分块写出结果。
+- 支持命令：
+  - `python3 qmc_mflac.py --self-test`
+  - `python3 qmc_mflac.py <input.mflac> <output.flac> --ekey '<EKEY>'`
+  - `python3 qmc_mflac.py <input.mflac> <output.flac> --ekey-db player_process_db`
+  - `python3 qmc_mflac.py <input.mflac> --inspect`
+- 用户样例 `cadode - 光の暈.mflac` 已确认是 PC `PcV2MusicEx`/`MusicEx` 格式：文件大小约 37.5 MiB，尾部长度 192 字节，`media_mid=003hu7tI4cI8wf`，`media_filename=F0M000430fru0eU0v0.mflac`，文件内没有 EKey。
+- 因此样例不能仅凭文件离线解码；必须提供合法的 `--ekey`，或从 QQ 音乐 Android 客户端导出的 `player_process_db` 中匹配密钥。也可以在兼容的 Windows QQ 音乐客户端环境中取得 EKey/明文后转移到 Linux。
+- 已验证：`python -m py_compile mflac-linux-decoder/qmc_mflac.py`、`python mflac-linux-decoder/qmc_mflac.py --self-test`、样例 `--inspect` 和 `git diff --check` 均通过。
+- 公开参考：`pushbox/qmc2`、ix64 的 MGG/MFLAC 格式研究、`mzj3920/qqmusic-decrypt`。这些资料均说明 PC MusicEx 新版文件不内嵌可离线使用的 EKey；不能把当前工具宣称为无密钥破解工具。
+
 ## 10. Git 与文件约定
 
 最近相关提交：
@@ -197,6 +211,7 @@ Adminer 使用 MySQL/MariaDB、Server 1Panel-mysql-BHnV、Database/Username wech
 
 - Converter.png
 - design-previews/
+- mflac-linux-decoder/
 - yssqi.ccwu.cc-fullchain.pem
 
 不要使用 git reset --hard、git clean 或删除无关文件。提交时只纳入本次相关源代码和资源。
@@ -206,6 +221,8 @@ Adminer 使用 MySQL/MariaDB、Server 1Panel-mysql-BHnV、Database/Username wech
 ~~~
 node --check miniprogram/pages/index/index.js
 python -m py_compile converter-api/app/main.py
+python -m py_compile mflac-linux-decoder/qmc_mflac.py
+python mflac-linux-decoder/qmc_mflac.py --self-test
 git diff --check
 git status --short --branch
 ~~~

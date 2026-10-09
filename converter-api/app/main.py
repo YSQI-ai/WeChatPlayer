@@ -24,6 +24,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
 
 try:
+    from .mflac_fallback import MflacDecodeError, decode_mflac
+except ImportError:  # pragma: no cover - supports running main.py directly
+    from app.mflac_fallback import MflacDecodeError, decode_mflac
+
+try:
     import pymysql
     from pymysql.cursors import DictCursor
 except ImportError:  # pragma: no cover - installed in the production virtualenv
@@ -739,7 +744,16 @@ def _decode_encrypted_media(job_dir: Path, input_path: Path, input_extension: st
     decoded_dir.mkdir()
     if input_extension == "mflac":
         output_path = decoded_dir / f"{_safe_stem(input_path.name)}.flac"
-        _run_command([QMC2_BIN, str(input_path), str(output_path)], job_dir)
+        try:
+            _run_command([QMC2_BIN, str(input_path), str(output_path)], job_dir)
+        except ConversionFailed as exc:
+            if "unknown encryption method" not in str(exc).lower():
+                raise
+            logger.info("QMC2 does not support this MFLAC variant; trying the Python fallback")
+            try:
+                decode_mflac(input_path, output_path)
+            except (MflacDecodeError, OSError) as fallback_exc:
+                raise ConversionFailed(f"MFLAC fallback decoder failed: {fallback_exc}") from fallback_exc
         if not output_path.exists() or output_path.stat().st_size == 0:
             raise ConversionFailed("The MFLAC decoder did not produce an output file")
         return output_path

@@ -1,0 +1,10 @@
+# Local helper binaries, settings, task state, and decrypted media.
+*.exe
+*.dll
+*.json
+*.log
+*.flac
+*.mflac
+*.tmp
+runtime/
+output/
