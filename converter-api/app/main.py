@@ -376,7 +376,7 @@ def _db_history(client_id: str, cloud_only: bool = False) -> list[dict[str, obje
         clause = "AND cloud_saved=1" if cloud_only else ""
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT id, token, client_id, output_filename, media_type, status, cloud_saved, size_bytes, "
+                "SELECT id, token, client_id, source_filename, output_filename, media_type, status, cloud_saved, size_bytes, "
                 "created_at, completed_at, expires_at, error_message FROM conversion_records "
                 f"WHERE client_id=%s {clause} ORDER BY created_at DESC LIMIT 100",
                 (client_id,),
@@ -393,7 +393,8 @@ def _db_history(client_id: str, cloud_only: bool = False) -> list[dict[str, obje
             records.append({
                 "id": token or str(row["id"]),
                 "record_id": row["id"],
-                "filename": row["output_filename"] or "转换失败",
+                "filename": row["output_filename"] or row["source_filename"] or "转换失败",
+                "source_filename": row["source_filename"] or "",
                 "download_url": f"/api/v1/download/{token}" if token else "",
                 "media_type": row["media_type"] or "application/octet-stream",
                 "status": row["status"],
@@ -669,7 +670,9 @@ def _run_command(command: list[str], cwd: Path) -> None:
     if result.returncode != 0:
         error_tail = (result.stderr or result.stdout or "converter failed").strip()[-2000:]
         logger.warning("Converter failed with exit code %s: %s", result.returncode, error_tail)
-        raise ConversionFailed("The file could not be converted")
+        raise ConversionFailed(
+            f"Converter exited with code {result.returncode}: {error_tail}"
+        )
 
 
 def _convert_document(job_dir: Path, input_path: Path) -> tuple[Path, str]:

@@ -1,6 +1,6 @@
 # WeChatPlayer 项目上下文
 
-更新时间：2026-10-08（Asia/Shanghai）
+更新时间：2026-10-09（Asia/Shanghai）
 
 本文是当前项目的交接基线。若旧聊天记录与本文或实际代码、服务器状态冲突，以实际状态和本文前部为准。本文不记录 SSH 密码、数据库密码、私钥或其他可直接登录的秘密。
 
@@ -153,7 +153,7 @@ Adminer 使用 MySQL/MariaDB、Server 1Panel-mysql-BHnV、Database/Username wech
 - node --check miniprogram/pages/index/index.js 通过。
 - python -m py_compile converter-api/app/main.py 通过。
 - git diff --check 通过。
-- WXML view 开闭数量 115/115，block 开闭数量 10/10。
+- WXML view 开闭数量 117/117，block 开闭数量 12/12。
 - nginx -t 通过，wechat-converter.service 为 active。
 - 外部 health 返回 200，报告 1 GiB 上限和 MySQL 状态。
 - 外部 test 已报告 mflac、ncm 输入和 FLAC 输出能力。
@@ -161,15 +161,26 @@ Adminer 使用 MySQL/MariaDB、Server 1Panel-mysql-BHnV、Database/Username wech
 - API 上传 NCM 并下载结果成功，输出为有效 FLAC，大小 478070 字节。
 - 四个导航 PNG 均为 300x300，透明角点 alpha 为 0。
 - 既有转换、云盘保存/列表/重命名/删除、历史和 MySQL 审计流程已完成冒烟验证。
+- 2026-10-09 使用用户提供的 `cadode - 光の暈.mflac` 做服务器端到端回归：上传链路正常，QMC2 返回 `unknown encryption method`，HTTP 422；问题定位为当前 QMC2 不支持该 MFLAC 加密变体，不是上传或 FFmpeg 错误。
+- 后端 `_run_command` 现在把转换器退出码和 stderr 尾部（最多 2000 字符）写入 `error_message`，历史接口同时返回失败记录的原始文件名；修复已部署到 `/opt/wechat-converter-api`，`wechat-converter.service` active，内网 health 返回 200。
+- 小程序历史页现支持记录展开：失败记录显示转换日志；成功记录放大显示文件名，并提供打开文件、保存到云端按钮；转换接口返回 4xx/5xx 后会自动刷新历史列表。
 
 ## 9. 当前待办与限制
 
-- 用真实 MFLAC 样例做一次服务器端到端解密和 API 转换验证。
+- 接入支持当前 QQ 音乐 MFLAC 加密变体的无交互服务端解码器，并确认所需密钥/授权来源；现有 QMC2 只能明确报告 `unknown encryption method`，不能成功转换该样例。
 - 在微信开发者工具/真机验证 MFLAC、NCM、1 GB 边界、大文件取消和失败提示。
 - 验证导航 PNG 在不同手机宽度和深色导航栏上的显示比例。
 - 回归上传、转换、PDF 预览、媒体播放、本地保存/重复保存/删除、云盘保存/重命名/删除、历史刷新。
 - 清理阿里云安全组中 9853/8089 的旧公网放行规则。
 - 若继续排查 Adminer 公网 502，只检查 1Panel 代理、安全组和容器日志，不修改数据库凭据。
+
+### 9.1 2026-10-09 MFLAC 失败日志排查
+
+- 用户样例：`cadode - 光の暈.mflac`，约 37.5 MiB。
+- 服务端日志：`Converter exited with code 1: QMC2 decoder (cli) v0.2 ... ERROR: unknown encryption method`。
+- 已验证：上传、任务记录、MySQL 历史查询和 422 返回均正常；原实现的问题是 stderr 只进 systemd 日志，数据库错误字段被固定成 `The file could not be converted`。
+- 公开候选工具需要桌面 QQ 音乐进程/Frida 或额外 ekey，不能直接作为当前无交互 FastAPI 后端的替换方案；未替换线上 QMC2。
+- 公网 HTTPS 探测曾出现 TLS 连接被重置；SSH 侧 systemd 和 `http://127.0.0.1:18080/api/v1/health` 正常，公网网关问题需单独排查。
 
 ## 10. Git 与文件约定
 

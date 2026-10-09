@@ -61,6 +61,7 @@ Page({
     clientId: '',
     historyFiles: [],
     historyLoading: false,
+    expandedHistoryId: '',
     cloudFiles: [],
     cloudLoading: false,
     renamingCloudId: '',
@@ -162,6 +163,35 @@ Page({
         });
       },
       fail: () => wx.showToast({ title: '下载失败，请重试', icon: 'none' })
+    });
+  },
+
+  toggleHistoryItem(event) {
+    const id = event.currentTarget.dataset.id;
+    if (!id) return;
+    this.setData({ expandedHistoryId: this.data.expandedHistoryId === id ? '' : id });
+  },
+
+  noop() {},
+
+  saveHistoryToCloud(event) {
+    const { id, filename } = event.currentTarget.dataset;
+    if (!id || !this.data.clientId) return;
+    wx.request({
+      url: apiUrl(`/api/v1/cloud-files/${encodeURIComponent(this.data.clientId)}/${encodeURIComponent(id)}`),
+      method: 'POST',
+      success: (response) => {
+        if (response.statusCode !== 200) {
+          wx.showToast({ title: responseMessage(response.data, '保存到云端失败'), icon: 'none' });
+          return;
+        }
+        this.setData({
+          historyFiles: this.data.historyFiles.map((item) => item.id === id ? { ...item, cloud_saved: true } : item)
+        });
+        this.loadCloudFiles();
+        wx.showToast({ title: `${filename || '文件'}已保存到云端`, icon: 'success' });
+      },
+      fail: () => wx.showToast({ title: '网络连接失败，请重试', icon: 'none' })
     });
   },
 
@@ -374,6 +404,7 @@ Page({
       success: (response) => {
         if (response.statusCode < 200 || response.statusCode >= 300) {
           wx.showToast({ title: responseMessage(response.data, '转换失败'), icon: 'none' });
+          this.loadHistory();
           return;
         }
         try {
