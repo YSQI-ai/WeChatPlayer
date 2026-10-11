@@ -14,3 +14,9 @@ project.private.config.json
 Converter.png
 design-previews/
 .agents/
+
+# Windows helper: machine-local config, protected credentials and journal, and
+# any authorized key file must never be committed.
+windows-helper/config.ini
+windows-helper/state/
+*.ekey
