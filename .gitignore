@@ -7,3 +7,10 @@ __pycache__/
 *.log
 project.private.config.json
 *-privkey.pem
+*-fullchain.pem
+*.flac
+*.mflac
+*.exe
+Converter.png
+design-previews/
+.agents/
