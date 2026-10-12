@@ -219,6 +219,22 @@ WSL 报错：当前计算机配置不支持 WSL2。
 
 另记一次自身失误：启动 Docker Desktop 后我用 `docker info ... 2>$null` 加 `$LASTEXITCODE` 判断"就绪"，**把错误信息重定向掉了，因此误判为已就绪**，随后的构建才暴露问题。正确的就绪判据是拿到非空的 `ServerVersion`。
 
+## CI 首次运行即发现真实缺陷：测试依赖未声明（2026-10-12）
+
+CI 第一次运行的结果：小程序流程测试（11 项）**通过**；服务端协议测试（36 项）**失败**；Docker 构建当时仍在进行。
+
+**根因**：`converter-api/tests/test_helper_protocol.py` 使用 `from fastapi.testclient import TestClient`。`fastapi.testclient` 是 `starlette.testclient` 的转发，而后者**依赖 `httpx`**，但 `httpx` **不在 `requirements.txt`**（它是测试依赖，不是运行依赖）。本机恰好装了 `httpx 0.28.1`，所以本地一直是"侥幸通过"。
+
+**影响**：任何克隆仓库、只安装 `requirements.txt` 的人**都无法运行那 36 项测试**。而 README 当时写的"克隆后无需安装依赖即可运行"是**错误陈述**，已在本次一并修正（README 与两份简历中的同款表述）。
+
+**定位方法**：用 sys.meta_path 钩子屏蔽 `httpx` 后导入 `fastapi.testclient`，确认必然抛 `ImportError`，从而排除其他可能。
+
+**修复**：新增 `converter-api/requirements-dev.txt`（`-r requirements.txt` + `httpx==0.28.1`），CI 改装该文件并同时纳入 pip 缓存键。Dockerfile 仍只用 `requirements.txt`，保持运行镜像不含测试依赖。
+
+**验证**：建立全新虚拟环境、**只安装声明过的依赖**，按 CI 的调用方式运行，36 + 42 项全部通过。
+
+**教训（已写入 `docs/docker-and-ci.md`）**："在我机器上能跑"往往意味着依赖了本机碰巧存在的东西；干净环境才能暴露；发现问题要连文档一起改。
+
 ## 工作区
 
 当前分支为 `main`。工作区仅剩用户原有的未跟踪 `.obsidian/`，以及未跟踪的 `resume/`（个人简历与求职分析，**不建议公开**，如需保留请加入 `.gitignore`）。`windows-helper/config.ini`、`miniprogram/config.local.js`、`windows-helper/helper/local_config.py` 按预期被忽略。

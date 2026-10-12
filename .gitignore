@@ -29,3 +29,8 @@ dsh-session-*/
 # repository; copy the matching *.example.* file to create your own.
 miniprogram/config.local.js
 windows-helper/helper/local_config.py
+
+# Personal job-search material: resumes and the market analysis behind them.
+# This is a project repository; the folder is kept locally and is not part of
+# the project.  Remove this line if you deliberately want it published.
+resume/

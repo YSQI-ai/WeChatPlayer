@@ -176,7 +176,13 @@ python run_helper.py             # 启动
 
 ## 测试
 
-项目使用 **Python 标准库 `unittest`**，不依赖 pytest；前端测试用 Node.js 原生断言，不依赖 npm 包。克隆后无需额外安装即可运行。
+项目使用 **Python 标准库 `unittest`**，不依赖 pytest；前端测试用 Node.js 原生断言，不依赖 npm 包。Python 测试需先安装依赖：
+
+```bash
+pip install -r converter-api/requirements-dev.txt
+```
+
+前端流程测试只依赖 Node 内置模块，无需安装任何包。
 
 ### 离线测试（89 项）
 
