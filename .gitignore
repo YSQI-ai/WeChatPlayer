@@ -20,3 +20,7 @@ design-previews/
 windows-helper/config.ini
 windows-helper/state/
 *.ekey
+
+# Exported conversation logs and their attachments are session artifacts, not
+# project sources.  The name carries a per-session id, so match the prefix.
+dsh-session-*/
