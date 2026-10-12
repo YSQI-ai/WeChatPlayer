@@ -59,14 +59,18 @@
     - 现有网页工具同样走隧道：`ssh -N -L 9853:127.0.0.1:9853 -L 8089:127.0.0.1:8089 wechat-prod`，再访问 `http://127.0.0.1:9853`（Adminer）或 `:8089`（phpMyAdmin）。
     - 凭据在服务器 `.env` 的 `MYSQL_USER` / `MYSQL_PASSWORD`，**不要复制到本地明文文件**。
 
-  **2026-10-12 复核结果：一半完成，绑定那层没生效**
+  **2026-10-12 复核结果：绑定那层没生效 → 已修复**
   - ✅ **公网已不可达**：从本机实测 `3306` 为 `TIMEOUT/FILTERED`，同批 `443` 正常连通（对照组），故是端口被拦而非本机网络问题。
-  - ❌ **绑定没有改**：服务器上 `ss -ltn` 仍为 `0.0.0.0:3306`，Docker 仍是 `0.0.0.0:3306->3306/tcp`，且容器 `1Panel-mysql-BHnV` 的创建时间是 `2026-09-28`——**从未重建过**，说明端口映射未改动。
-  - 主机 `ufw` inactive、iptables 无 3306 拦截规则，故当前的拦截**只来自安全组**，即上面说的"单层防护"。
-  - 因此：**用户实际完成的是第二层（安全组）**，第一层（绑定）仍待做。风险是安全组规则一旦被重新放行，3306 会立刻重新暴露。
-  - 应用未受影响：`/api/v1/health` 返回 `database: mysql`、`helper_queue: ready`，`wechat-converter.service` active。
+  - ❌→✅ **绑定原为 `0.0.0.0`，根因已定位并修复**：`/opt/1panel/apps/mysql/mysql/.env` 中 `HOST_IP=''`（空值），compose 的 `${HOST_IP}:${PANEL_APP_PORT_HTTP}:3306` 因此渲染为 `:3306:3306`，Docker 便绑定全部网卡。同目录的 adminer / phpmyadmin 本就是 `HOST_IP='127.0.0.1'`，唯独 mysql 和 redis 是空值。
+  - **修复动作**：`mysqldump` 全量备份（`/root/db-backup-20261012-215827.sql`，3.7 MB / 40 张表）→ `.env` 备份为 `.env.bak-20261012-215838` → 改 `HOST_IP='127.0.0.1'` → `docker compose up -d` 重建容器（MySQL 约 3 秒就绪）。
+  - **修复后验证**：`ss` 为 `127.0.0.1:3306`、Docker 为 `127.0.0.1:3306->3306/tcp`；公网 `3306`/`33060` 均 `TIMEOUT`；`/api/v1/health` 返回 `database: mysql`、`helper_queue: ready`；数据完好（`wechat_converter` 4 张表）。
+  - **Adminer / phpMyAdmin 未受影响**：三者同在 `1panel-network`，容器内实测可连（`phpMyAdmin -> MySQL: OK`、`Adminer -> MySQL: OK`）。
+  - ⚠️ **填服务器地址时的注意点**：Adminer / phpMyAdmin 自身跑在容器里，登录框里**不能填 `127.0.0.1`**（那指向它自己，也不是公网 IP），应填容器名 **`1Panel-mysql-BHnV`**。
+  - 数据目录是 bind mount（`/opt/1panel/apps/mysql/mysql/data` → `/var/lib/mysql`），故重建容器不影响数据。
 
-  - **新发现**：`40555`（`1panel-core`）**从公网可达**，返回 `HTTP 200 / Access Temporarily Unavailable`（1Panel 安全入口在起作用，但端口本身开放）。建议改绑 `127.0.0.1` 或加安全组白名单。
+  - ✅ **本质因已消除（绑定层）**，安全组那层依旧保留 = 现在是两层防护。
+  - ⏳ **同一缺陷仍在 Redis**：`/opt/1panel/apps/redis/redis/.env` 也是 `HOST_IP=''`，实测 `0.0.0.0:6379` 且仅靠安全组拦截。修法同上（注意重建 Redis 可能让 1Panel 会话短暂失效，建议挑时间）。
+  - ⏳ **1Panel 面板自身 `40555` 仍绑 `0.0.0.0` 且公网可达**（返回 1Panel 的 `Access Temporarily Unavailable`，说明安全入口生效）。这项不能用 `HOST_IP` 修（面板不是 1Panel 应用），应在 1Panel「面板设置」里配安全入口 / 授权 IP，或加安全组白名单。
   - 其余端口均已拦截：`6379`、`8080`、`8089`、`9853`、`18080` 全部 `TIMEOUT/FILTERED`；公网开放的只有 `22`、`80`、`443`、`40555`。
 
 ## P1 运维

@@ -166,6 +166,29 @@ helper 协议**已上线并完成首次真实联调**（2026-10-12）。链路�
 
 **新发现**：`40555`（`1panel-core`）从公网可达，返回 `HTTP 200 / Access Temporarily Unavailable`——1Panel 的安全入口在起作用，但端口本身开放，建议改绑或加白名单。
 
+## 3306 绑定已修复（2026-10-12）
+
+**根因**：`/opt/1panel/apps/mysql/mysql/.env` 里 `HOST_IP=''`（空值）。compose 写作 `${HOST_IP}:${PANEL_APP_PORT_HTTP}:3306`，空值渲染成 `:3306:3306`，Docker 就绑定所有网卡。同目录的 adminer、phpmyadmin 本就是 `HOST_IP='127.0.0.1'`，**只有 mysql 和 redis 是空值**——这也解释了为什么用户看到"数据库指向公网地址"。
+
+**动作**：`mysqldump` 全量备份（`/root/db-backup-20261012-215827.sql`，3.7 MB / 40 张表）→ `.env` 备份 `.env.bak-20261012-215838` → 改 `HOST_IP='127.0.0.1'` → `docker compose up -d` 重建容器，MySQL 约 3 秒就绪。
+
+**验证**（全部实测）：
+
+| 检查 | 结果 |
+|---|---|
+| 服务器监听 | `127.0.0.1:3306` ✅（原 `0.0.0.0:3306`） |
+| Docker 映射 | `127.0.0.1:3306->3306/tcp` ✅ |
+| 公网可达性 | `3306`、`33060` 均 `TIMEOUT/FILTERED` ✅ |
+| 应用健康 | `database: mysql`、`helper_queue: ready`、service active ✅ |
+| 数据完整性 | `wechat_converter` 4 张表 ✅ |
+| Adminer / phpMyAdmin | 容器内实测均能连上 ✅ |
+
+数据目录是 bind mount（`data/` → `/var/lib/mysql`），重建容器不影响数据。
+
+**容器内外的地址差别（易踩坑）**：Adminer / phpMyAdmin 自身在容器里，登录框**不能填 `127.0.0.1`**（那指向它自己），也不能填公网 IP（已失效），应填容器名 **`1Panel-mysql-BHnV`**。
+
+**同类问题仍未修**：Redis（`HOST_IP=''`，实测 `0.0.0.0:6379`）与 1Panel 面板自身（`40555`，公网可达）。面板不是 1Panel 应用，不能用 `HOST_IP` 修，需在面板设置里配安全入口/授权 IP 或加安全组白名单。
+
 ## 工作区
 
 当前分支为 `main`。工作区仅剩用户原有的未跟踪 `.obsidian/`，以及未跟踪的 `resume/`（个人简历与求职分析，**不建议公开**，如需保留请加入 `.gitignore`）。`windows-helper/config.ini`、`miniprogram/config.local.js`、`windows-helper/helper/local_config.py` 按预期被忽略。
