@@ -174,6 +174,10 @@ Page({
   openHistoryFile(event) {
     const { url, filename } = event.currentTarget.dataset;
     if (!url) return;
+    const extension = extensionOf(filename);
+    // wx.openDocument only renders documents and PDFs.  Audio and video must go
+    // to the workspace player instead, otherwise they simply fail to open.
+    const openable = extension === 'pdf' || DOCUMENT_EXTENSIONS.includes(extension);
     wx.downloadFile({
       url: apiUrl(url),
       success: (response) => {
@@ -181,12 +185,32 @@ Page({
           wx.showToast({ title: '文件链接已失效，请重新转换', icon: 'none' });
           return;
         }
-        wx.openDocument({
-          filePath: response.tempFilePath,
-          showMenu: true,
-          fileType: extensionOf(filename),
-          fail: () => wx.showModal({ title: '无法直接打开', content: '请在打开页面右上角使用系统分享或保存。', showCancel: false })
+        if (openable) {
+          wx.openDocument({
+            filePath: response.tempFilePath,
+            showMenu: true,
+            fileType: extension,
+            fail: () => wx.showModal({ title: '无法直接打开', content: '请在打开页面右上角使用系统分享或保存。', showCancel: false })
+          });
+          return;
+        }
+        const item = (this.data.historyFiles || []).find((entry) => entry.download_url === url) || {};
+        const minutes = Math.ceil(Number(item.expires_in || 0) / 60);
+        this.stopHelperWait();
+        this.setData({
+          activeTab: 'workspace',
+          helperJob: null,
+          result: {
+            filename,
+            download_url: url,
+            size_text: item.size_text || '',
+            expiresText: minutes > 0 ? `${minutes} 分钟` : '已过期'
+          },
+          resultKind: VIDEO_FORMATS.includes(extension) ? 'video' : 'audio',
+          resultTempPath: response.tempFilePath,
+          savedPath: ''
         });
+        wx.pageScrollTo({ scrollTop: 0, duration: 220 });
       },
       fail: () => wx.showToast({ title: '下载失败，请重试', icon: 'none' })
     });
@@ -341,7 +365,9 @@ Page({
 
   chooseMode(event) {
     if (this.data.uploading) return;
-    this.setData({ mode: event.currentTarget.dataset.mode, file: null, outputName: '', outputNameError: '', result: null, resultKind: '', resultTempPath: '', savedPath: '' });
+    // A pending helper job belongs to the previous mode, so drop it too.
+    this.stopHelperWait();
+    this.setData({ mode: event.currentTarget.dataset.mode, file: null, outputName: '', outputNameError: '', result: null, resultKind: '', resultTempPath: '', savedPath: '', helperJob: null });
   },
 
   chooseFile() {
@@ -381,7 +407,10 @@ Page({
   },
 
   clearFile() {
-    if (!this.data.uploading) this.setData({ file: null, outputName: '', outputNameError: '', result: null, resultKind: '', resultTempPath: '', savedPath: '' });
+    if (!this.data.uploading) {
+      this.stopHelperWait();
+      this.setData({ file: null, outputName: '', outputNameError: '', result: null, resultKind: '', resultTempPath: '', savedPath: '', helperJob: null });
+    }
   },
 
   changeOutputName(event) {
@@ -421,7 +450,17 @@ Page({
     const formData = { response_mode: 'link', client_id: this.data.clientId || 'anonymous', output_name: outputName };
     if (this.data.mode === 'media') formData.target_format = this.data.formats[this.data.targetIndex];
 
-    this.setData({ uploading: true, progress: 0, result: null, resultKind: '', resultTempPath: '', savedPath: '' });
+    // Any job still being waited on belongs to a previous upload.
+    this.stopHelperWait();
+    this.setData({
+      uploading: true,
+      progress: 0,
+      result: null,
+      resultKind: '',
+      resultTempPath: '',
+      savedPath: '',
+      helperJob: null
+    });
     const task = wx.uploadFile({
       url: `${API_ORIGIN}${endpoint}`,
       filePath: this.data.file.path,
@@ -599,6 +638,10 @@ Page({
       this.downloadResult({ autoOpen: true });
       return;
     }
+    // wx.openDocument renders documents and PDFs only.  Audio and video are
+    // already handled by the inline player, and calling openDocument on them
+    // raised "无法打开此文件" immediately after the player appeared.
+    if (this.data.resultKind !== 'pdf') return;
     wx.openDocument({
       filePath: this.data.resultTempPath,
       showMenu: true,

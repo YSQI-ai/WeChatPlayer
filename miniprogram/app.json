@@ -4,9 +4,10 @@
   ],
   "window": {
     "navigationBarTitleText": "文件转换",
-    "navigationBarBackgroundColor": "#f4f6f3",
-    "navigationBarTextStyle": "black",
-    "backgroundColor": "#f4f6f3"
+    "navigationBarBackgroundColor": "#171a2d",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#171a2d",
+    "backgroundTextStyle": "light"
   },
   "style": "v2",
   "sitemapLocation": "sitemap.json"

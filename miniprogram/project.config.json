@@ -9,6 +9,11 @@
     "postcss": true,
     "minified": true
   },
+  "packOptions": {
+    "ignore": [
+      { "type": "file", "value": "README.md" }
+    ]
+  },
   "appid": "wxffba3ec2042cf72d",
   "projectname": "wechat-converter"
 }
