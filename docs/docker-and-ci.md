@@ -210,6 +210,43 @@ from fastapi.testclient import TestClient
 2. **CI 第一次运行就找出一个真 bug，这就是它存在的理由**，而不是走个形式
 3. 发现问题后要**连文档一起改**。README 那句"无需安装依赖"如果不改，下一个人还会踩
 
+### 第二个问题：我把 Windows 程序的测试放到了 Linux 上跑
+
+修好 `httpx` 之后，36 项服务端测试过了，**42 项助手测试又挂了**。这次的原因更值得讲。
+
+助手有个"进程门禁"功能：配置里可以要求某个进程必须在运行（比如 QQ 音乐），否则不领任务。实现是这样的：
+
+```python
+def _process_running(name):
+    try:
+        result = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {name}", ...])
+    except (OSError, subprocess.SubprocessError):
+        return True        # 检查跑不起来时，当作"在运行"
+    return name.lower() in result.stdout.lower()
+```
+
+问题出在那个 `return True`：
+
+| 平台 | `tasklist` | 结果 | 测试 |
+|---|---|---|---|
+| Windows | 存在，但查不到该进程 | 返回 `False` → **拦住** | ✅ 通过 |
+| Linux | **不存在** → 抛 `OSError` | 返回 `True` → **放行** | ❌ 失败 |
+
+有一个测试叫 `test_required_process_gate_can_block_work`，它断言"门禁应该拦住任务"。在 Linux 上因为上面那个 `return True`，任务被放行了，所以断言失败。
+
+**根本问题在我的设计，不在代码**：助手是一个 Windows 程序（它用 `tasklist` 查进程、用 DPAPI 加密凭据文件），**它的测试本来就该在 Windows 上跑**。我图省事把它和 Linux 的服务端测试塞进了同一个任务。
+
+**修复**：把助手测试拆成独立任务，跑在 `windows-latest` 上：
+
+```yaml
+  helper-tests:
+    runs-on: windows-latest      # 不是一个平台，是这个组件真实的运行环境
+```
+
+**顺带值得注意的一点**：那个 `return True` 是"**检查不出来就放行**"（fail open）。这意味着**在任何没有 `tasklist` 的环境里，这个门禁等于不存在**。因为生产环境就是 Windows，所以不影响实际使用，但它是"检查失败时的默认行为该倾向哪边"的一个真实例子——安全相关的检查通常应该 fail closed。这个行为**我没有擅自改**，只把它记在了 `TASKS.md` 里。
+
+**两轮 CI 一共找出两个真实缺陷。** 这就是为什么值得花时间接流水线。
+
 ---
 
 ## 五、怎么验证（重要：你本机 Docker 目前用不了）

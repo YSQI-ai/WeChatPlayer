@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  python-tests:
-    name: Python tests (78)
+  server-tests:
+    name: Server protocol tests (36)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +34,7 @@ jobs:
         # runtime dependencies.
         run: pip install -r converter-api/requirements-dev.txt
 
-      - name: Server helper-protocol tests (36)
+      - name: Helper-protocol tests
         # The tests import app.main, which needs a writable conversion root.
         # Point it at the runner's temp dir instead of the production path.
         working-directory: converter-api
@@ -42,7 +42,22 @@ jobs:
           CONVERTER_TMP_ROOT: ${{ runner.temp }}/wechat-converter
         run: python -m unittest discover -s tests -p "test_helper_protocol.py" -v
 
-      - name: Windows helper unit tests (42)
+  helper-tests:
+    name: Windows helper unit tests (42)
+    # These run on Windows because the helper is a Windows program.  It gates
+    # work on a running process by shelling out to tasklist, and keeps its
+    # credential file in DPAPI; neither exists on Linux.  On Linux the gate
+    # fails open, so test_required_process_gate_can_block_work saw the job
+    # claimed instead of blocked -- a pass on Windows and a failure there.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Helper unit tests
         # These import only helper.* and the standard library, so they need no
         # extra installation.
         working-directory: windows-helper

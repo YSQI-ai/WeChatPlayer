@@ -30,6 +30,10 @@
 
 ## P1 验证
 
+- [ ] **确认 `_process_running` 的 fail-open 行为是否符合预期**（`windows-helper/helper/agent.py`）。
+  - 现状：`tasklist` 不存在或调用失败时返回 `True`（视为"进程在运行"），即**检查无法执行时门禁放行**。
+  - 影响：生产环境为 Windows，`tasklist` 始终可用，故实际不受影响；但逻辑上"安全检查无法判定时应倾向拒绝"（fail closed）更稳妥。
+  - 这是**行为变更**，需用户决定是否改；当前仅记录，未改动。
 - [ ] **推送后确认 CI 三个任务全绿**（尤其 `docker-build`）。
   - 已校验：`docker compose config` 完整解析通过、YAML 语法有效、Dockerfile 引用的路径均存在、运行时唯一可写路径已在镜像中创建授权。
   - **未校验**：镜像能否真正构建、容器能否提供服务——本机 Docker 引擎起不来（WSL2 报"当前计算机配置不支持 WSL2"，需启用「虚拟机平台」并在 BIOS 开启虚拟化后重启）。

@@ -216,13 +216,14 @@ python -m unittest discover -s tests -p "test_helper_integration.py"
 
 上述检查由 GitHub Actions 在每次 push 与 pull request 时自动执行（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)），共三个任务：
 
-| 任务 | 内容 |
-| --- | --- |
-| Python 测试 | 36 项服务端协议测试 + 42 项助手单元测试 |
-| 小程序流程测试 | 11 项前端流程测试 |
-| 镜像构建 | 构建 Docker 镜像、启动容器、**等待健康检查通过**后才算成功 |
+| 任务 | 运行环境 | 内容 |
+| --- | --- | --- |
+| 服务端协议测试 | ubuntu-latest | 36 项队列协议测试 |
+| 助手单元测试 | **windows-latest** | 42 项助手单元测试——**该组件是 Windows 程序**，用 `tasklist` 查进程、用 DPAPI 保护凭据文件，在 Linux 上测不到真实行为 |
+| 小程序流程测试 | ubuntu-latest | 11 项前端流程测试 |
+| 镜像构建 | ubuntu-latest | 构建 Docker 镜像、启动容器、**等待健康检查通过**后才算成功 |
 
-第三个任务不只看"构建成功"——它会把镜像跑起来并轮询 `/api/v1/health`，失败时自动打印容器日志，因为**能构建不代表能运行**。
+镜像构建任务不只看"构建成功"——它会把镜像跑起来并轮询 `/api/v1/health`，失败时自动打印容器日志，因为**能构建不代表能运行**。
 
 ### 测试覆盖的关键行为
 

@@ -235,6 +235,32 @@ CI 第一次运行的结果：小程序流程测试（11 项）**通过**；服�
 
 **教训（已写入 `docs/docker-and-ci.md`）**："在我机器上能跑"往往意味着依赖了本机碰巧存在的东西；干净环境才能暴露；发现问题要连文档一起改。
 
+## CI 第二轮又发现一个缺陷：Windows 组件的测试被放在 Linux 上跑（2026-10-12）
+
+`httpx` 修好后，36 项服务端测试通过、**Docker 构建任务也通过了**（镜像真实构建 + 启动 + 健康检查成功，Dockerfile 至此得到实测验证），但 **42 项助手单元测试失败**。
+
+**根因**：`windows-helper/helper/agent.py` 的进程门禁实现为"检查跑不起来就放行"：
+
+```python
+def _process_running(name):
+    try:
+        result = subprocess.run(["tasklist", ...])
+    except (OSError, subprocess.SubprocessError):
+        return True          # fail open
+    return name.lower() in (result.stdout or "").lower()
+```
+
+- **Windows**：`tasklist` 存在、查不到该进程 → `False` → 拦住 → 测试通过。
+- **Linux**：无 `tasklist` → `OSError` → **`True`** → 放行 → 任务被领取 → `test_required_process_gate_can_block_work` 断言失败。
+
+**这是设计错误而非代码错误**：助手是 Windows 程序（另有 DPAPI 凭据保护同样只在 Windows 生效），其测试本就应在 Windows 上运行。原先把它与 Linux 的服务端测试塞在同一任务里，是我图省事。
+
+**修复**：CI 拆成 `server-tests`（ubuntu）与 `helper-tests`（**windows-latest**），后者在该组件真实的运行环境上验证。
+
+**另记一个设计问题（未擅自改动）**：`_process_running` 是 **fail open**——在任何没有 `tasklist` 的环境下该门禁形同虚设。生产即 Windows，故不影响实际使用，但"安全检查在无法判定时应倾向拒绝"是通常做法。已记入 `TASKS.md` 待用户决定。
+
+**至此两轮 CI 共发现两个真实缺陷**（`httpx` 依赖未声明、测试平台选错），Dockerfile 与 compose 得到实测验证。
+
 ## 工作区
 
 当前分支为 `main`。工作区仅剩用户原有的未跟踪 `.obsidian/`，以及未跟踪的 `resume/`（个人简历与求职分析，**不建议公开**，如需保留请加入 `.gitignore`）。`windows-helper/config.ini`、`miniprogram/config.local.js`、`windows-helper/helper/local_config.py` 按预期被忽略。
