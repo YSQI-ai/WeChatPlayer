@@ -34,3 +34,8 @@ windows-helper/helper/local_config.py
 # This is a project repository; the folder is kept locally and is not part of
 # the project.  Remove this line if you deliberately want it published.
 resume/
+
+# Local notes about the running server: changes made, current exposure, and the
+# commands to get back in.  Kept out of the published repository for the same
+# reason the real host is redacted from the docs.
+notes/
