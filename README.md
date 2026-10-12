@@ -184,7 +184,7 @@ pip install -r converter-api/requirements-dev.txt
 
 前端流程测试只依赖 Node 内置模块，无需安装任何包。
 
-### 离线测试（89 项）
+### 离线测试（91 项）
 
 不需要数据库、不需要运行中的服务。以下命令均从**仓库根目录**执行：
 
@@ -195,7 +195,7 @@ cd converter-api && python -m unittest discover -s tests -p "test_helper_protoco
 # 助手单元测试：42 项
 cd windows-helper && python -m unittest discover -s tests -p "test_helper_units.py"
 
-# 小程序流程测试：11 项（桩化 wx 运行时，只依赖 Node 内置模块）
+# 小程序流程测试：13 项（桩化 wx 运行时，只依赖 Node 内置模块）
 node tools/miniprogram-flow.test.js
 ```
 
@@ -220,7 +220,7 @@ python -m unittest discover -s tests -p "test_helper_integration.py"
 | --- | --- | --- |
 | 服务端协议测试 | ubuntu-latest | 36 项队列协议测试 |
 | 助手单元测试 | **windows-latest** | 42 项助手单元测试——**该组件是 Windows 程序**，用 `tasklist` 查进程、用 DPAPI 保护凭据文件，在 Linux 上测不到真实行为 |
-| 小程序流程测试 | ubuntu-latest | 11 项前端流程测试 |
+| 小程序流程测试 | ubuntu-latest | 13 项前端流程测试 |
 | 镜像构建 | ubuntu-latest | 构建 Docker 镜像、启动容器、**等待健康检查通过**后才算成功 |
 
 镜像构建任务不只看"构建成功"——它会把镜像跑起来并轮询 `/api/v1/health`，失败时自动打印容器日志，因为**能构建不代表能运行**。
