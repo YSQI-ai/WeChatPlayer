@@ -21,10 +21,13 @@
   - 上传返回 `202` + `job_id` + `status_url`；源文件移入 helper 源目录，转换任务目录不再保留副本。
   - 上传行以 `helper_queued:<job_id>` 标记收尾，客户端可据此区分"已转交"与"真失败"。
   - 线上实测：真实 39 MB 样例经 `/convert/media` 得到 `{"status":"queued","job_id":2,...}`，`GET /api/v1/jobs/2` 返回 `queued`。
-- [ ] **小程序：处理 202 与轮询**
-  - 上传拿到 202 后轮询 `status_url`，直到 `succeeded` 取 `download_url`；`failed` 时把 `error_message` 展示给用户。
-  - 历史列表要把 `error_message` 以 `helper_queued:` 开头的记录渲染为"处理中"，而不是失败。
-  - 注意：已知会为同一次上传留下「一条 queued 标记行 + 一条 helper 成功行」两条记录，需要在渲染层合并或后续改为复用同一行。
+- [x] **小程序：处理 202 与轮询**（2026-10-12 完成，提交 `53c9a89`）
+  - 已实现：识别 `status: "queued"` 响应，轮询 `status_url`（5 秒一次，上限 60 次）；成功时复用同一套结果卡片，失败时展示服务端 `error_message`；`onUnload` 清理定时器；等待期间显示专用卡片说明"密钥不在文件内，需本机助手解码"。
+  - 历史列表中 `error_message` 以 `helper_queued:` 开头的记录渲染为"已转交本机助手解码"，不再显示为失败。
+  - 线上实测完整回路：上传得 `queued`（job 2）→ helper 领取、下载 39 MB、判定无密钥 → 回报失败 → 客户端轮询看到 `failed` 与可读的 `error_message`。
+  - 静态检查：`node --check` 通过、JSON 有效、WXML `<view>` 配对 124/124。
+  - **未做**：微信开发者工具/真机实跑（见下方 P1 验证），因此 202 分支目前只有代码级与接口级验证。
+- [ ] **已知瑕疵：一次上传会留下两条历史记录**（一条 `helper_queued:` 标记行 + 一条 helper 成功行）。渲染层已把前者显示为"处理中"，但记录仍重复；后续应改为 helper 发布结果时复用同一条 `conversion_records`。
 
 ## P1 验证
 
