@@ -309,6 +309,31 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("enroll-secret", str(described))
         self.assertTrue(described["enrollment_secret_configured"])
 
+    def test_ini_file_with_percent_variables_is_not_interpolated(self) -> None:
+        """A %LOCALAPPDATA%-style path must survive INI parsing.
+
+        configparser's default BasicInterpolation raises on a bare %, and the
+        shipped example config uses exactly that syntax, so this guards the
+        interpolation=None setting.
+        """
+        path = _TEST_ROOT / "config" / "percent.ini"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "[helper]\n"
+            "api_base_url = https://from-file.test\n"
+            "state_dir = %LOCALAPPDATA%\\WeChatPlayerHelper\n"
+            "key_source = none\n",
+            encoding="utf-8",
+        )
+        os.environ["LOCALAPPDATA"] = r"C:\Users\tester\AppData\Local"
+        try:
+            config = HelperConfig.load(path)
+        finally:
+            os.environ.pop("LOCALAPPDATA", None)
+        self.assertEqual(
+            config.state_dir, Path(r"C:\Users\tester\AppData\Local\WeChatPlayerHelper")
+        )
+
     def test_ini_file_is_read_and_env_overrides_secret(self) -> None:
         path = _TEST_ROOT / "config" / "helper.ini"
         path.parent.mkdir(parents=True, exist_ok=True)

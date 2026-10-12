@@ -134,7 +134,10 @@ class HelperConfig:
     @classmethod
     def load(cls, config_path: Path | None = None) -> "HelperConfig":
         """Load configuration from an INI file plus environment overrides."""
-        parser = configparser.ConfigParser()
+        # interpolation=None is required: Windows paths are written with %VARS%
+        # and configparser's default BasicInterpolation treats a bare % as a
+        # syntax error.  Expansion is our own job, in _expand().
+        parser = configparser.ConfigParser(interpolation=None)
         path = config_path or (Path(__file__).resolve().parent.parent / DEFAULT_CONFIG_NAME)
         if path.is_file():
             try:
@@ -154,7 +157,7 @@ class HelperConfig:
         config = cls(
             api_base_url=os.environ.get("HELPER_API_BASE_URL") or raw("api_base_url", DEFAULT_API_BASE_URL),
             enrollment_secret=os.environ.get("HELPER_ENROLLMENT_SECRET", "").strip(),
-            device_name=os.environ.get("HELPER_DEVICE_NAME") or raw("device_name"),
+            device_name=os.environ.get("HELPER_DEVICE_NAME") or _expand(raw("device_name")),
             state_dir=Path(_expand(state_dir_text)),
             work_dir=Path(_expand(raw("work_dir"))) if raw("work_dir") else None,
             poll_interval_seconds=_as_int(raw("poll_interval_seconds"), 5, 1),
