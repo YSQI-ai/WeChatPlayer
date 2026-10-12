@@ -1,13 +1,12 @@
 # WeChatPlayer Tasks
 
-## P0 待真实验证
+## 已决定关闭
 
-- [ ] **取得合法授权密钥来源，完成 `PcV2MusicEx` 真实解码**
-  - 现状：`run_helper.py --check` 已全绿，注册成功（`dev_006f02e375fe2f68`），链路已打通。唯一缺口是密钥。
-  - 实测依据：样例 `cadode - 光の暈.mflac` `--inspect` 结果为 `footer=PcV2MusicEx ekey=no`；全盘搜索 `C:`、`D:` 不存在 `player_process_db`，也无 `.ekey`；QQ 音乐装在 `D:\Program Files (x86)\Tencent\QQMusic\` 但安装目录内无任何 `.db` 密钥文件。
-  - 需要用户提供其一：合法 EKey 字符串（写入 `key_source_path` 指向的文件），或导出的 `player_process_db`。
-  - 验收：样例转出可播放的 FLAC；密钥不进入小程序、URL、数据库或普通日志。
-  - 相关文件：`windows-helper/config.example.ini`、`windows-helper/README.md`。
+- [x] ~~**取得合法授权密钥来源，完成 `PcV2MusicEx` 真实解码**~~ — **2026-10-12 用户决定放弃**（提交 `d48bccd`）。
+  - 结论：PC `PcV2MusicEx`/`MusicEx` 容器不内嵌 EKey；全盘搜索 `C:`、`D:` 不存在 `player_process_db`，也无 `.ekey`；QQ 音乐安装目录内无 `.db` 密钥文件。用户明确不再追这条线。
+  - 处理方式：**保留全部代码**（服务端队列、Windows helper、两套测试），只把小程序界面从"等待本机助手"改为"该文件暂不支持"，不再承诺无法兑现的结果。
+  - 不再需要用户提供 EKey 或 `player_process_db`。
+  - 若日后重新开启：只需要还原 `miniprogram/pages/index/` 的文案，机制本身完好且有测试守着。
 
 - [x] **部署 helper 协议并确认线上可用**（2026-10-12 完成）
   - 服务端 `.env` 已追加 `HELPER_ENROLLMENT_SECRET`，`app/helper_api.py`、`app/helper_store.py`、`app/main.py` 已上传（上传前备份为 `*.bak-20261012-130409`）。
@@ -61,6 +60,7 @@
 - [x] 服务端 helper 协议状态机通过 29 项测试：设备注册与撤销、单任务领取、心跳、成功/失败/超时回报、租约过期重试、旧租约被拒、重复完成不产生第二个结果。
 - [x] Windows helper 通过 41 项单元测试与 6 项对真实服务的集成测试。
 - [x] 小程序整页自检修复（2026-10-12，`504f6d4`、`51eaeee`）：音视频误用 `openDocument`、首页写死的 `+ 24.8%` / `99% 服务可用率` 假数据、helper 任务状态残留、导航栏配色不一致、`README.md` 随包上传、`wx.getSavedFileList` 废弃告警。回归测试 `tools/miniprogram-flow.test.js` 11/11 通过（`node tools/miniprogram-flow.test.js`）。
+- [x] 界面不再承诺 helper 能完成（2026-10-12，`d48bccd`）：等待卡片、历史记录行、超时与选择文件提示全部改为按实际能力描述。仅改文案与注释，未动控制流；`node --check` 通过、`<view>` 配对 124/124、流程测试 11/11 通过。
 - [x] 2026-10-12 线上只读巡检：服务 active 2 天、MySQL 已连、3 天内仅 200/422/404 无 5xx、无 traceback、无 OOM；磁盘 23 GiB 可用。
 - [x] 2026-10-12 helper 首次真实联调：39 MB 样例经 operator 端点入队（job 1），helper 领取、下载、判定无密钥后按设计失败并回报 `no_authorized_key_source`；两侧临时文件均已清理，未泄漏密钥。
 - [x] 最近相关提交：`04b4cfb feat: add MFLAC fallback and helper handoff`。
