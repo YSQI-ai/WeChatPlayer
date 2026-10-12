@@ -692,6 +692,71 @@ def _ensure_tmp(settings: HelperSettings) -> Path:
     return settings.tmp_root
 
 
+def enqueue_existing_file(
+    *,
+    store,
+    settings: "HelperSettings",
+    source_path: Path,
+    source_filename: str,
+    client_id: str,
+    reason: str,
+    target_format: str = "flac",
+    output_name: str = "",
+) -> dict[str, object]:
+    """Queue a source file that is already on disk.
+
+    Used by the conversion endpoint when it meets a file only an authorized
+    helper can decode.  The file is *moved* into a dedicated source directory so
+    the helper can download it, and the job row is inserted once with its final
+    path so no second write is needed.
+
+    Raises :class:`HelperEnqueueError` if the file cannot be queued; the caller
+    still owns cleanup of its own job directory.
+    """
+
+    source_dir = _unique_dir(_ensure_tmp(settings), "helper-source-")
+    try:
+        stored_path = source_dir / "source.mflac"
+        shutil.move(str(source_path), str(stored_path))
+        total = stored_path.stat().st_size
+        if total == 0:
+            raise HelperEnqueueError("source file is empty")
+        if total > settings.max_source_bytes:
+            raise HelperEnqueueError("source file is too large for the helper queue")
+        with stored_path.open("rb") as stored:
+            if not _looks_like_qmc(stored):
+                raise HelperEnqueueError("not a QQ Music encrypted file")
+
+        job_key = helper_store.job_key_for(client_id, reason, total, _fingerprint(stored_path))
+        job, created = store.create_job(
+            client_id=client_id or "anonymous",
+            source_filename=output_name or source_filename or "source.mflac",
+            source_path=str(stored_path),
+            target_format=target_format,
+            source_size_bytes=total,
+            reason=reason,
+            max_attempts=settings.max_attempts,
+            job_key=job_key,
+        )
+        if not created:
+            # The same content is already queued; keep that job and drop this copy.
+            shutil.rmtree(source_dir, ignore_errors=True)
+        return {
+            "job_id": int(job["id"]),
+            "status": str(job["status"]),
+            "created": created,
+        }
+    except Exception as exc:
+        shutil.rmtree(source_dir, ignore_errors=True)
+        if isinstance(exc, HelperEnqueueError):
+            raise
+        raise HelperEnqueueError(str(exc)) from exc
+
+
+class HelperEnqueueError(Exception):
+    """Raised when a source file cannot be handed to the helper queue."""
+
+
 def _unique_dir(parent: Path, prefix: str) -> Path:
     """Create a uniquely named directory under ``parent``.
 

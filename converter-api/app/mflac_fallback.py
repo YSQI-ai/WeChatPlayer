@@ -16,9 +16,49 @@ MASK_SIZE = 128
 SEARCH_SIZE = 0x8000
 CHUNK_SIZE = 1024 * 1024
 
+#: Public QMC footer markers, checked against the tail of the file.
+FOOTER_MARKERS = {
+    b"STag": "STag",
+    b"QTag": "QTag",
+    b"musicex\x00": "PcV2MusicEx",
+}
+
+#: Containers that never carry an embedded EKey.  Their per-file key comes from
+#: QQ Music's servers after account authorization, so nothing in the file can
+#: recover it: the mask fallback below cannot help, only a helper that holds an
+#: authorized key can.
+KEYLESS_CONTAINERS = frozenset({"PcV2MusicEx"})
+
 
 class MflacDecodeError(Exception):
     """Raised when an MFLAC mask cannot be detected or decoded."""
+
+
+class HelperRequiredError(MflacDecodeError):
+    """Raised when only an authorized external key can decode this file."""
+
+
+def detect_container(input_path: Path) -> str:
+    """Return the QMC container kind from the file's footer, or ``unknown``."""
+
+    try:
+        size = input_path.stat().st_size
+        with input_path.open("rb") as handle:
+            if size > 1024:
+                handle.seek(-1024, 2)
+            tail = handle.read(1024)
+    except OSError:
+        return "unknown"
+    for marker, kind in FOOTER_MARKERS.items():
+        if tail.endswith(marker):
+            return kind
+    return "unknown"
+
+
+def requires_helper(input_path: Path) -> bool:
+    """True when the file needs an authorized key the server cannot obtain."""
+
+    return detect_container(input_path) in KEYLESS_CONTAINERS
 
 
 def _mask_from_candidate(candidate: bytes) -> bytes | None:

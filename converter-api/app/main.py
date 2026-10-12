@@ -24,9 +24,19 @@ from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
 
 try:
-    from .mflac_fallback import MflacDecodeError, decode_mflac
+    from .mflac_fallback import (
+        HelperRequiredError,
+        MflacDecodeError,
+        decode_mflac,
+        requires_helper,
+    )
 except ImportError:  # pragma: no cover - supports running main.py directly
-    from app.mflac_fallback import MflacDecodeError, decode_mflac
+    from app.mflac_fallback import (  # type: ignore[no-redef]
+        HelperRequiredError,
+        MflacDecodeError,
+        decode_mflac,
+        requires_helper,
+    )
 
 try:
     from . import helper_api, helper_store
@@ -806,6 +816,12 @@ def _decode_encrypted_media(job_dir: Path, input_path: Path, input_extension: st
             try:
                 decode_mflac(input_path, output_path)
             except (MflacDecodeError, OSError) as fallback_exc:
+                # A container with no embedded EKey cannot be opened by any
+                # purely offline method: its per-file key is issued by QQ Music
+                # to an authorized client.  Signal that so the caller can hand
+                # the untouched upload to the helper queue.
+                if requires_helper(input_path):
+                    raise HelperRequiredError(str(fallback_exc)) from fallback_exc
                 raise ConversionFailed(f"MFLAC fallback decoder failed: {fallback_exc}") from fallback_exc
         if not output_path.exists() or output_path.stat().st_size == 0:
             raise ConversionFailed("The MFLAC decoder did not produce an output file")
@@ -1088,6 +1104,53 @@ def media_convert(
             )
         _db_complete_conversion(record_id, None, download_name, media_type, size_bytes)
         return _file_response(output_path, media_type, download_name, job_dir)
+    except HelperRequiredError as exc:
+        # The upload carries no EKey, so no offline decoder can open it.  Hand
+        # the untouched file to the helper queue and let the client poll, rather
+        # than failing an upload that a helper could still complete.
+        logger.info("MFLAC container needs the helper queue: %s", exc)
+        if not (helper_queue_ready and helper_settings.enabled):
+            message = (
+                "This MFLAC container has no embedded EKey, so decoding it needs an "
+                "authorized Windows helper, and the helper queue is not enabled on "
+                "this server."
+            )
+            _db_fail_conversion(record_id, message)
+            _handle_failure(job_dir, ConversionFailed(message))
+            raise AssertionError("unreachable")
+        try:
+            queued = helper_api.enqueue_existing_file(
+                store=helper_store_impl,
+                settings=helper_settings,
+                source_path=input_path,
+                source_filename=file.filename or "upload.mflac",
+                client_id=client_id,
+                reason="missing_ekey",
+                target_format="flac",
+                output_name=output_name,
+            )
+        except helper_api.HelperEnqueueError as enqueue_exc:
+            message = f"Could not queue the file for the helper: {enqueue_exc}"
+            _db_fail_conversion(record_id, message)
+            _handle_failure(job_dir, ConversionFailed(message))
+            raise AssertionError("unreachable")
+        # The upload row is closed with a marker instead of a real failure; the
+        # successful record is created when the helper publishes its result, so
+        # clients should treat a "helper_queued:" row as still in progress.
+        _db_fail_conversion(record_id, f"helper_queued:{queued['job_id']}")
+        _remove_job_dir(job_dir)
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "queued",
+                "job_id": queued["job_id"],
+                "created": queued["created"],
+                "status_url": f"/api/v1/jobs/{queued['job_id']}?client_id={client_id}",
+                "filename": _output_name(output_name, file.filename, "flac"),
+                "message": "Queued for an authorized helper; poll status_url for the download link.",
+            },
+        )
+
     except (UploadTooLarge, ConversionFailed, ValueError) as exc:
         _db_fail_conversion(record_id, str(exc))
         _handle_failure(job_dir, exc)

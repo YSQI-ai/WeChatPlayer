@@ -18,6 +18,7 @@ import threading
 import unittest
 from datetime import timedelta
 from pathlib import Path
+from unittest import mock
 
 CONVERTER_API_DIR = Path(__file__).resolve().parent.parent
 if str(CONVERTER_API_DIR) not in sys.path:
@@ -37,7 +38,8 @@ os.environ["HELPER_MAX_ATTEMPTS"] = "3"
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app import helper_api, helper_store  # noqa: E402
+from app import helper_api, helper_store, mflac_fallback  # noqa: E402
+from app import main as app_main  # noqa: E402
 from app.main import TMP_ROOT, app  # noqa: E402
 
 ENROLL_SECRET = "test-enrollment-secret"
@@ -597,6 +599,103 @@ class HelperProtocolHttpTests(unittest.TestCase):
     def test_client_status_is_not_public(self) -> None:
         response = self.client.get("/api/v1/jobs/1")
         self.assertEqual(response.status_code, 422, "client_id is required")
+
+
+class ContainerDetectionTests(unittest.TestCase):
+    """The server must recognise a container that can only be opened with a key."""
+
+    def write(self, name: str, payload: bytes) -> Path:
+        path = _TEST_TMP / name
+        path.write_bytes(payload)
+        return path
+
+    def test_pc_musicex_needs_a_helper(self) -> None:
+        path = self.write("detect-musicex.mflac", qmc_source())
+        self.assertEqual(mflac_fallback.detect_container(path), "PcV2MusicEx")
+        self.assertTrue(mflac_fallback.requires_helper(path))
+
+    def test_embedded_key_containers_do_not_need_a_helper(self) -> None:
+        # A QTag/STag container carries its own key, so it must not be queued.
+        for name, tail in (("detect-qtag.mflac", b"QTag"), ("detect-stag.mflac", b"STag")):
+            with self.subTest(marker=tail):
+                path = self.write(name, b"\x11" * 512 + tail)
+                self.assertIn(mflac_fallback.detect_container(path), {"QTag", "STag"})
+                self.assertFalse(mflac_fallback.requires_helper(path))
+
+    def test_unknown_file_is_not_treated_as_needing_a_helper(self) -> None:
+        path = self.write("detect-plain.bin", b"not a qmc file at all")
+        self.assertEqual(mflac_fallback.detect_container(path), "unknown")
+        self.assertFalse(mflac_fallback.requires_helper(path))
+
+
+class MediaHelperHandoffTests(unittest.TestCase):
+    """An upload the server cannot decode must be queued, not rejected."""
+
+    def setUp(self) -> None:
+        self.client = TestClient(app)
+        self.client.__enter__()  # run the lifespan so the queue reports ready
+        self.addCleanup(self.client.__exit__, None, None, None)
+
+    def post_media(self, payload: bytes, name: str = "cadode.mflac"):
+        return self.client.post(
+            "/api/v1/convert/media",
+            files={"file": (name, payload, "application/octet-stream")},
+            data={"target_format": "flac", "client_id": "media-test", "response_mode": "link"},
+        )
+
+    def test_pc_musicex_upload_returns_202_with_a_job(self) -> None:
+        # The container has no EKey, so every offline decoder refuses it.  The
+        # endpoint must hand it to the helper queue instead of returning 422.
+        with mock.patch.object(
+            app_main,
+            "_run_command",
+            side_effect=app_main.ConversionFailed("unknown encryption method"),
+        ):
+            response = self.post_media(qmc_source())
+        self.assertEqual(response.status_code, 202, response.text)
+
+        body = response.json()
+        self.assertEqual(body["status"], "queued")
+        self.assertGreater(int(body["job_id"]), 0)
+        self.assertIn("/api/v1/jobs/", body["status_url"])
+        self.assertTrue(body["filename"].endswith(".flac"))
+
+        # The queued job must be visible to the client that uploaded it.
+        status = self.client.get(
+            f"/api/v1/jobs/{body['job_id']}", params={"client_id": "media-test"}
+        )
+        self.assertEqual(status.status_code, 200, status.text)
+        self.assertEqual(status.json()["status"], "queued")
+
+    def test_queued_upload_is_not_reported_as_a_hard_failure(self) -> None:
+        with mock.patch.object(
+            app_main,
+            "_run_command",
+            side_effect=app_main.ConversionFailed("unknown encryption method"),
+        ):
+            response = self.post_media(qmc_source())
+        self.assertEqual(response.status_code, 202)
+        # The upload row is closed with a marker, so a client can tell a queued
+        # upload apart from a genuine failure.
+        history = self.client.get("/api/v1/history/media-test")
+        if history.status_code == 200:
+            rows = history.json().get("records") or history.json().get("history") or []
+            for row in rows:
+                if row.get("status") == "failed":
+                    self.assertTrue(
+                        str(row.get("error_message", "")).startswith("helper_queued:"),
+                        row,
+                    )
+
+    def test_non_qmc_upload_still_fails_normally(self) -> None:
+        # A file that is not a QQ Music container must keep the old behaviour.
+        with mock.patch.object(
+            app_main,
+            "_run_command",
+            side_effect=app_main.ConversionFailed("unknown encryption method"),
+        ):
+            response = self.post_media(b"this is not an mflac file", name="plain.mflac")
+        self.assertEqual(response.status_code, 422, response.text)
 
 
 if __name__ == "__main__":
