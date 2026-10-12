@@ -261,6 +261,35 @@ def _process_running(name):
 
 **至此两轮 CI 共发现两个真实缺陷**（`httpx` 依赖未声明、测试平台选错），Dockerfile 与 compose 得到实测验证。
 
+## 服务器侧暴露面收敛完成（2026-10-12）
+
+用户已在安全组把 3306 来源改为 `127.0.0.1`（效果上已挡住外部），并要求我把**服务器侧**的部分做完。
+
+**Redis `6379`（同一缺陷）**：`/opt/1panel/apps/redis/redis/.env` 同样是 `HOST_IP=''`。修复前先确认**无任何客户端连接**（`ss -tn state established` 为空）、数据目录仅 4 KB，故重建无风险。改 `HOST_IP='127.0.0.1'` → 重建容器 → **2 秒恢复**，现监听 `127.0.0.1:6379`。
+
+**1Panel 面板 `40555`（无 HOST_IP 可用）**：面板不是"1Panel 应用"，且 `1pctl listen-ip` 只支持 `ipv4`/`ipv6`，**不能指定绑定地址**。改用面板自身的配置项 `BindAddress`（原值 `0.0.0.0`）：
+
+- 备份 `core.db` → `1pctl stop core` → 用 Python `sqlite3`（stdlib，服务器上没装 sqlite3 命令行）改 `BindAddress='127.0.0.1'` → `1pctl start core` → 验证。
+- 先停后改，避免运行中的进程把改动覆盖回去；脚本内置**失败自动回滚**（还原 core.db 并重启）。
+- 结果：监听 `127.0.0.1:40555`，本机 `curl` 返回 `HTTP 200`，`1pctl status core` 为运行中。
+
+**最终监听状态（服务器侧实测）**：
+
+| 端口 | 绑定 | 说明 |
+|---|---|---|
+| 22 / 80 / 443 | `0.0.0.0` | 对外服务，符合预期 |
+| 18080 | `127.0.0.1` | 应用（Nginx 反代） |
+| 3306 | `127.0.0.1` | MySQL |
+| 6379 | `127.0.0.1` | Redis |
+| 40555 | `127.0.0.1` | 1Panel 面板 |
+| 8089 / 9853 | `127.0.0.1` | phpMyAdmin / Adminer |
+
+**公网复扫**：`3306`/`6379` 为 FILTERED，`40555` 为 REFUSED（安全组仍放行但公网接口已无监听），`9853`/`8089`/`18080` 全部 FILTERED。**公网开放的只剩 22/80/443。** 应用健康检查正常（`database: mysql`、`helper_queue: ready`），`wechat-converter.service` active。
+
+⚠️ **面板访问方式已变**：不再能通过 `公网IP:40555` 打开，需走隧道 `ssh -N -L 40555:127.0.0.1:40555 wechat-prod`，浏览器访问 `http://127.0.0.1:40555/`（仍需带安全入口路径）。回滚：`1pctl stop core` → `BindAddress` 改回 `0.0.0.0` → `1pctl start core`。
+
+**待用户处理（安全组侧）**：建议**删除** 3306 那条来源为 `127.0.0.1` 的规则（对外永不匹配，属绕路写法，留着易误解），并删除 40555 的 `0.0.0.0/0` 规则。
+
 ## 工作区
 
 当前分支为 `main`。工作区仅剩用户原有的未跟踪 `.obsidian/`，以及未跟踪的 `resume/`（个人简历与求职分析，**不建议公开**，如需保留请加入 `.gitignore`）。`windows-helper/config.ini`、`miniprogram/config.local.js`、`windows-helper/helper/local_config.py` 按预期被忽略。
