@@ -34,10 +34,10 @@
   - 现状：`tasklist` 不存在或调用失败时返回 `True`（视为"进程在运行"），即**检查无法执行时门禁放行**。
   - 影响：生产环境为 Windows，`tasklist` 始终可用，故实际不受影响；但逻辑上"安全检查无法判定时应倾向拒绝"（fail closed）更稳妥。
   - 这是**行为变更**，需用户决定是否改；当前仅记录，未改动。
-- [ ] **推送后确认 CI 三个任务全绿**（尤其 `docker-build`）。
-  - 已校验：`docker compose config` 完整解析通过、YAML 语法有效、Dockerfile 引用的路径均存在、运行时唯一可写路径已在镜像中创建授权。
-  - **未校验**：镜像能否真正构建、容器能否提供服务——本机 Docker 引擎起不来（WSL2 报"当前计算机配置不支持 WSL2"，需启用「虚拟机平台」并在 BIOS 开启虚拟化后重启）。
-  - 验收：GitHub Actions 上 `docker-build` 任务通过（它会真实构建镜像、启动容器并轮询 `/api/v1/health`）。
+- [x] **CI 全绿**（2026-10-12，run #3，提交 `9c4adb8`，conclusion: success）
+  - 4 个任务全部通过：`server-tests`（ubuntu）、`helper-tests`（**windows-latest**）、`miniprogram-tests`（ubuntu）、`docker-build`（ubuntu）。
+  - `docker-build` 的真实含义：镜像构建成功 → 容器启动 → 轮询 `/api/v1/health` 拿到响应。**至此 Dockerfile 得到实测验证**（本机 Docker 不可用，无法本地验证）。
+  - 达成过程中修掉两个真实缺陷：测试依赖 `httpx` 未声明（run #1 失败）、Windows 组件的测试错放在 Linux（run #2 失败）。
 - [ ] **本机 Docker 修复后实测 compose 全流程**：`cp .env.example .env` → `docker compose up --build` → `curl 127.0.0.1:18080/api/v1/health`。
 - [ ] 在微信开发者工具或真机验证 MFLAC、NCM、1 GiB 边界、取消上传和失败提示。
 - [ ] 回归文档转 PDF、媒体播放、保存/重复保存/删除、云盘保存/重命名/删除和历史刷新。

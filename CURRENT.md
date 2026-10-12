@@ -290,6 +290,19 @@ def _process_running(name):
 
 **待用户处理（安全组侧）**：建议**删除** 3306 那条来源为 `127.0.0.1` 的规则（对外永不匹配，属绕路写法，留着易误解），并删除 40555 的 `0.0.0.0/0` 规则。
 
+## CI 全绿（2026-10-12，run #3，提交 `9c4adb8`）
+
+四个任务全部通过：`server-tests`（ubuntu）、`helper-tests`（**windows-latest**）、`miniprogram-tests`（ubuntu）、`docker-build`（ubuntu）。
+
+**`docker-build` 通过的意义**：它不是"构建成功"而已——镜像构建 → 容器启动 → 轮询 `/api/v1/health` 拿到响应才算通过。**至此 `Dockerfile` 与镜像的运行时行为得到实测验证**，补上了本机 Docker 不可用留下的验证缺口。
+
+**为达成全绿修掉的两个真实缺陷**（都是 CI 发现的，不是猜的）：
+
+1. **run #1 失败**：测试依赖 `httpx` 未声明 → `fastapi.testclient` 无法导入 → 36 项测试在干净环境跑不起来。见上文专节。
+2. **run #2 失败**：Windows 助手的测试被放在 Linux 上跑 → `_process_running` 的 fail-open 分支导致门禁放行 → 断言失败。见上文专节。
+
+**CI 的实际价值已经体现**：两轮运行各暴露一个真实缺陷，其中一个（依赖未声明）会让任何克隆仓库的人无法运行测试。这也说明**"本地通过"不能替代在干净环境验证**。
+
 ## 工作区
 
 当前分支为 `main`。工作区仅剩用户原有的未跟踪 `.obsidian/`，以及未跟踪的 `resume/`（个人简历与求职分析，**不建议公开**，如需保留请加入 `.gitignore`）。`windows-helper/config.ini`、`miniprogram/config.local.js`、`windows-helper/helper/local_config.py` 按预期被忽略。
