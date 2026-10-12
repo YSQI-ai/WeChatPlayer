@@ -17,7 +17,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULT_CONFIG_NAME = "config.ini"
-DEFAULT_API_BASE_URL = "https://api.yssqi.ccwu.cc"
+# Placeholder on purpose: the real deployed endpoint is supplied by config.ini,
+# the HELPER_API_BASE_URL environment variable, or a git-ignored local_config.py,
+# so that publishing this repository does not disclose the production host.
+DEFAULT_API_BASE_URL = "https://api.example.com"
+
+try:  # pragma: no cover - optional local override, absent in a fresh clone
+    from .local_config import API_BASE_URL as DEFAULT_API_BASE_URL  # type: ignore[assignment]
+except Exception:  # noqa: BLE001 - any import failure means "no override"
+    pass
 
 VALID_KEY_SOURCES = ("none", "ekey_file", "player_process_db")
 

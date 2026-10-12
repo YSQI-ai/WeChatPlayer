@@ -39,7 +39,7 @@ const wx = {
 const sandbox = {
   wx,
   Page: (o) => { page = o; },
-  require: () => ({ API_BASE_URL: 'https://api.yssqi.test' }),
+  require: () => ({ API_BASE_URL: 'https://api.example.test' }),
   module: { exports: {} },
   console, setTimeout, clearTimeout,
 };

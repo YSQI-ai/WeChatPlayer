@@ -24,3 +24,8 @@ windows-helper/state/
 # Exported conversation logs and their attachments are session artifacts, not
 # project sources.  The name carries a per-session id, so match the prefix.
 dsh-session-*/
+
+# Local endpoint overrides.  The deployed host stays out of the published
+# repository; copy the matching *.example.* file to create your own.
+miniprogram/config.local.js
+windows-helper/helper/local_config.py

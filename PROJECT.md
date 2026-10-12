@@ -36,21 +36,21 @@
 
 ## 部署基线
 
-- 正式 API：`https://api.yssqi.ccwu.cc`。
+- 正式 API：`https://api.example.com`。
 - 服务目录：`/opt/wechat-converter-api`；systemd 服务：`wechat-converter.service`。
 - Uvicorn 监听 `127.0.0.1:18080`；OpenResty 只代理 API、docs 和 openapi。
 - 服务器已配置 1 GiB 上传上限、关闭代理请求 buffering、1800 秒读写超时和并发 1。
 - QMC2 与 ncmdump 位于服务器 `/opt/wechat-converter-api/bin/`，二进制不写入 Git。
 - Adminer `127.0.0.1:9853`、phpMyAdmin `127.0.0.1:8089` 只允许 SSH 隧道访问。
-- 微信 request、uploadFile、downloadFile 合法域名均为 `https://api.yssqi.ccwu.cc`。
+- 微信 request、uploadFile、downloadFile 合法域名均为 `https://api.example.com`。
 
 部署变更后按需检查：
 
 ```text
 systemctl is-active wechat-converter.service
 curl -fsS http://127.0.0.1:18080/api/v1/health
-curl -fsS https://api.yssqi.ccwu.cc/api/v1/health
-curl -fsS https://api.yssqi.ccwu.cc/api/v1/test
+curl -fsS https://api.example.com/api/v1/health
+curl -fsS https://api.example.com/api/v1/test
 ```
 
 ## 相关决策
