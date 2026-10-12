@@ -16,10 +16,15 @@
 
 ## P1 集成
 
-- [ ] **把 helper 队列接入 `POST /api/v1/convert/media`**
-  - 说明：本地解码失败且判定为 PC MusicEx 时返回 job id（202）而不是 422；需要在 `mflac_fallback.py` 增加容器类型判定，并处理已创建的 `conversion_records` 记录收尾。
-  - 验收：小程序上传 PC MusicEx 后拿到 job id，轮询 `GET /api/v1/jobs/{job_id}?client_id=` 直到拿到下载链接。
-  - 注意：该改动触及已验证可用的转换接口，需单独提交并回归 NCM/普通媒体。
+- [x] **服务端：把 helper 队列接入 `POST /api/v1/convert/media`**（2026-10-12 完成，提交 `c9668dd`）
+  - 已实现：`mflac_fallback.requires_helper()` 读 footer 判定 `PcV2MusicEx`（该容器恒定无 EKey）；只有 QMC2 与 mask fallback **都真的失败后**才抛 `HelperRequiredError`，所以原本能解的文件行为不变。
+  - 上传返回 `202` + `job_id` + `status_url`；源文件移入 helper 源目录，转换任务目录不再保留副本。
+  - 上传行以 `helper_queued:<job_id>` 标记收尾，客户端可据此区分"已转交"与"真失败"。
+  - 线上实测：真实 39 MB 样例经 `/convert/media` 得到 `{"status":"queued","job_id":2,...}`，`GET /api/v1/jobs/2` 返回 `queued`。
+- [ ] **小程序：处理 202 与轮询**
+  - 上传拿到 202 后轮询 `status_url`，直到 `succeeded` 取 `download_url`；`failed` 时把 `error_message` 展示给用户。
+  - 历史列表要把 `error_message` 以 `helper_queued:` 开头的记录渲染为"处理中"，而不是失败。
+  - 注意：已知会为同一次上传留下「一条 queued 标记行 + 一条 helper 成功行」两条记录，需要在渲染层合并或后续改为复用同一行。
 
 ## P1 验证
 
