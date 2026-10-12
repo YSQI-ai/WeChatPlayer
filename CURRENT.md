@@ -66,9 +66,29 @@ helper 协议**已上线并完成首次真实联调**（2026-10-12）。链路�
 
 ## 当前阻塞
 
-**只差合法授权密钥。** helper 与服务端链路已全部打通并实测通过，但 `cadode - 光の暈.mflac` 属于 `PcV2MusicEx` 且无内嵌 EKey，而本机不存在任何 `player_process_db` 或 `.ekey`，因此真实解码无法进行。需要用户提供合法 EKey（写入 `key_source_path` 指向的文件，并把 `key_source` 设为 `ekey_file`）或导出的 `player_process_db`（`key_source = player_process_db`）。
+**只差合法授权密钥，其余每一环都已打通并上线。**
 
-服务端 `HELPER_ENROLLMENT_SECRET` **已配置**，`/api/v1/helper` 不再返回 503。
+「手机上传 `.mflac` → 拿到 `.flac`」这条链路现在完整实现并实测过：上传得 202 + job_id，小程序轮询状态，本机 helper 领取、下载、解码、回传，小程序拿到下载链接。唯一的缺口是 helper 没有密钥，因此对 PC MusicEx 文件会走到 `failed` 并回报可读的 `no_authorized_key_source`。
+
+能解开只有两条路：一份导出的 `player_process_db`（`key_source = player_process_db`），或一个合法 EKey 字符串（`key_source = ekey_file`）。已全盘确认本机 `C:`、`D:` 不存在任何 `player_process_db` 或 `.ekey`。
+
+服务端 `HELPER_ENROLLMENT_SECRET` 已配置，`/api/v1/helper` 与 `/api/v1/jobs` 均正常。
+
+## 手机上传链路（2026-10-12 完成并上线）
+
+需求「手机小程序上传 `.mflac` → 服务器返回 `.flac`」除密钥外全部实现，服务端与小程序两侧均已部署。
+
+**服务端**（`c9668dd`）：`POST /api/v1/convert/media` 遇到无内嵌 EKey 的 `PcV2MusicEx` 容器时不再 422，而是把源文件移入 helper 源目录、返回 `202 {status:"queued", job_id, status_url}`。判定用 `mflac_fallback.requires_helper()` 读 footer；只有在 QMC2 与 mask fallback **都真的失败之后**才走这条路，所以原本能解的文件行为不变（有测试守着）。上传行以 `helper_queued:<job_id>` 收尾，客户端据此区分"已转交"与"真失败"。
+
+**小程序**（`53c9a89`）：识别 202，轮询 `status_url`（5 秒一次、上限 60 次），成功复用同一套结果卡片，失败展示服务端 `error_message`；`onUnload` 清理定时器；等待期间显示专用卡片说明"密钥不在文件内、需本机助手解码"；历史列表把 `helper_queued:` 行渲染为"已转交本机助手解码"。
+
+**线上实测完整回路**：真实 39 MB 样例上传 → `202 job 2 queued` → helper 领取并下载 → 判定无密钥 → 回报 `no_authorized_key_source` → 客户端轮询看到 `failed` 与可读错误信息。两侧临时文件均已清理。
+
+**顺带试过但没有出路的两条**：`mflac_fallback` 的掩码法（不需要密钥）在真实文件上实测失败 `MFLAC mask could not be detected`；`KGMusicConverterPro-v1.3.7.exe` 是未签名、时间戳清零、内嵌 CPython 3.11 且载荷 gzip 压缩的打包程序，其密钥获取方式未做逆向（等于复刻绕过 DRM 的密钥提取器，不做）。
+
+**已知瑕疵**：一次上传会留下两条历史记录（`helper_queued:` 标记行 + helper 成功行），渲染层已处理显示，记录本身仍重复，记在 `TASKS.md`。
+
+**未验证**：小程序侧只做了代码级与接口级验证，**尚未在微信开发者工具或真机实跑**，因此 202 分支的界面表现未经真机确认。
 
 ## 工作区
 
