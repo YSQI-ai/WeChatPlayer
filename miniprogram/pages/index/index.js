@@ -524,6 +524,12 @@ Page({
   },
 
   // -- helper queue (files that need a machine-side decoder) --------------
+  //
+  // Note: the server-side queue is implemented and tested, but it cannot finish
+  // a PC MusicEx file, because the key is not in the file and no authorized key
+  // source is available.  The machinery below is kept so the file still gets a
+  // precise, readable explanation instead of a bare failure; the wording no
+  // longer promises that a helper is on its way.
 
   startHelperWait(queued) {
     this.stopHelperWait();
@@ -534,7 +540,7 @@ Page({
         statusUrl: queued.status_url,
         filename: queued.filename || '',
         status: 'queued',
-        message: '此格式需要本机解码助手，已加入队列，正在等待…'
+        message: '该文件使用 PC 端加密，密钥不在文件内，本服务无法解密。'
       }
     });
     this.helperPollTimer = setTimeout(() => this.pollHelperJob(), HELPER_POLL_INTERVAL_MS);
@@ -557,13 +563,13 @@ Page({
         // 404 is also what the server returns for a job that is not ours.
         if (response.statusCode === 404) {
           this.stopHelperWait();
-          this.setData({ helperJob: { ...job, status: 'failed', message: '任务已失效，请重新上传' } });
+          this.setData({ helperJob: { ...job, status: 'failed', message: '该文件暂不支持，请换用其他格式' } });
           return;
         }
         if (status === 'failed' || status === 'timeout' || status === 'cancelled') {
           this.stopHelperWait();
           this.setData({
-            helperJob: { ...job, status, message: body.error_message || '本机助手未能完成解码' }
+            helperJob: { ...job, status, message: body.error_message || '该文件使用 PC 端加密，本服务无法解密' }
           });
           this.loadHistory();
           return;
@@ -579,7 +585,7 @@ Page({
     if (this.helperPollAttempts >= HELPER_POLL_MAX_ATTEMPTS) {
       this.stopHelperWait();
       this.setData({
-        helperJob: { ...job, status: 'timeout', message: '等待超时，请确认本机助手正在运行后重试' }
+        helperJob: { ...job, status: 'timeout', message: '该文件暂不支持，请换用其他格式' }
       });
       return;
     }
