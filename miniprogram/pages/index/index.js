@@ -148,13 +148,22 @@ Page({
   },
 
   loadSavedFiles() {
-    if (typeof wx.getSavedFileList !== 'function') return;
+    // wx.getSavedFileList is deprecated; prefer the FileSystemManager method and
+    // keep the old one only as a fallback for very old base libraries.
+    const manager = typeof wx.getFileSystemManager === 'function' ? wx.getFileSystemManager() : null;
+    const listSaved =
+      manager && typeof manager.getSavedFileList === 'function'
+        ? manager.getSavedFileList.bind(manager)
+        : typeof wx.getSavedFileList === 'function'
+          ? wx.getSavedFileList
+          : null;
+    if (!listSaved) return;
     const metadata = wx.getStorageSync(SAVED_FILES_KEY) || [];
     const metadataByPath = metadata.reduce((map, item) => {
       if (item && item.filePath) map[item.filePath] = item;
       return map;
     }, {});
-    wx.getSavedFileList({
+    listSaved({
       success: ({ fileList }) => {
         const savedFiles = (fileList || []).map((item) => {
           const saved = metadataByPath[item.filePath] || {};
