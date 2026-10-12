@@ -8,6 +8,7 @@ const code = fs.readFileSync('miniprogram/pages/index/index.js', 'utf8');
 let page = null;
 const log = { openDocument: [], toasts: [], downloadFile: [], request: [] };
 let downloadBehaviour = 'ok';
+let chooseBehaviour = 'ok';
 
 const wx = {
   getStorageSync: () => '',
@@ -32,7 +33,19 @@ const wx = {
   getSavedFileList: () => {},
   removeSavedFile: () => {},
   saveFile: () => {},
-  chooseMessageFile: () => {},
+  chooseMessageFile: (o) => {
+    // Call fail through a guard: the point of these checks is to observe what the
+    // page does about a failure, not to crash the harness when it passes none.
+    const fail = (err) => { if (o.fail) o.fail(err); };
+    if (chooseBehaviour === 'ok') {
+      o.success({ tempFiles: [{ name: 'a.docx', size: 1024, path: '/tmp/a.docx' }] });
+    } else if (chooseBehaviour === 'privacy') {
+      // What the real API reports when the user refuses the privacy prompt.
+      fail({ errMsg: 'chooseMessageFile:fail privacy permission is not authorized' });
+    } else {
+      fail({ errMsg: 'chooseMessageFile:fail cancel' });
+    }
+  },
   createInnerAudioContext: () => ({}),
 };
 
@@ -57,6 +70,7 @@ function makePage() {
 function reset() {
   log.openDocument = []; log.toasts = []; log.downloadFile = []; log.request = [];
   downloadBehaviour = 'ok';
+  chooseBehaviour = 'ok';
   // Restore defaults; individual checks override these.
   wx.request = (o) => { log.request.push(o.url); };
   wx.downloadFile = (o) => {
@@ -192,6 +206,21 @@ check('history rows marked helper_queued are not shown as failures', () => {
   assert.strictEqual(captured[1].helper_queued, undefined);
   assert.strictEqual(captured[2].helper_queued, undefined);
   assert.strictEqual(captured[0].job_id, '12');
+});
+
+check('chooseFile reports a refused privacy prompt instead of doing nothing', () => {
+  const p = makePage();
+  chooseBehaviour = 'privacy';
+  p.chooseFile();
+  assert.strictEqual(log.toasts.length, 1, 'a refused prompt must produce feedback');
+  assert.ok(/授权/.test(log.toasts[0]), 'the message should name the cause: ' + log.toasts[0]);
+});
+
+check('chooseFile stays silent when the user simply cancels', () => {
+  const p = makePage();
+  chooseBehaviour = 'cancel';
+  p.chooseFile();
+  assert.deepStrictEqual(log.toasts, [], 'cancelling is not an error');
 });
 
 let failed = 0;

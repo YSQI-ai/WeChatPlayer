@@ -411,6 +411,20 @@ Page({
           resultTempPath: '',
           savedPath: ''
         });
+      },
+      // Without this, a failed picker is completely silent: the user taps the
+      // button and nothing at all happens.  The common case is refusing the
+      // privacy authorization, which is required for choosing a file out of a
+      // chat, so it gets its own wording rather than a generic error.  Cancelling
+      // is not a failure and stays quiet.
+      fail: (error) => {
+        const message = (error && error.errMsg) || '';
+        if (/cancel/i.test(message)) return;
+        const privacyRefused = /privacy/i.test(message);
+        wx.showToast({
+          title: privacyRefused ? '需要授权后才能选择文件' : '无法打开文件选择，请重试',
+          icon: 'none'
+        });
       }
     });
   },
