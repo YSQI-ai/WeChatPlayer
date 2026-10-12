@@ -587,6 +587,26 @@ class HelperProtocolHttpTests(unittest.TestCase):
         )
         self.assertEqual(rejected.status_code, 422)
 
+    def test_succeeded_job_exposes_everything_the_client_renders(self) -> None:
+        """The Mini Program builds its result card from these fields alone."""
+        device_id, token = register(self.client)
+        job_id = enqueue(self.client, client_id="render-client")["job_id"]
+        lease = claim(self.client, device_id, token)["job"]["lease_token"]
+        self.client.post(
+            f"/api/v1/helper/jobs/{job_id}/complete",
+            files={"file": ("song.flac", FLAC_PAYLOAD, "audio/flac")},
+            headers=device_headers(device_id, token, lease),
+        )
+
+        body = self.client.get(
+            f"/api/v1/jobs/{job_id}", params={"client_id": "render-client"}
+        ).json()
+        self.assertEqual(body["status"], helper_store.SUCCEEDED)
+        for field in ("job_id", "filename", "media_type", "size_bytes", "download_url"):
+            self.assertIn(field, body, body)
+        self.assertEqual(body["size_bytes"], len(FLAC_PAYLOAD))
+        self.assertTrue(body["download_url"].startswith("/api/v1/download/"))
+
     def test_client_status_hides_other_clients_jobs(self) -> None:
         enqueue(self.client, client_id="private-client")
         jobs = self.client.get("/api/v1/helper/jobs", headers=enroll_headers()).json()["jobs"]
