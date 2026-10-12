@@ -147,6 +147,25 @@ helper 协议**已上线并完成首次真实联调**（2026-10-12）。链路�
   - 已按真实显示尺寸（33 px）与放大尺寸（120 px）生成对比图核对，肉眼无明显差异。
   - 原始图标可用 `git checkout HEAD~1 -- miniprogram/assets/nav/` 取回。
 
+## 3306 复核：公网已拦住，但绑定那层没生效（2026-10-12）
+
+用户表示已把 3306 改为指向 `127.0.0.1`，实测复核结论是**只完成了一半**。
+
+**已验证（公网侧，从本机）**：`3306` 返回 `TIMEOUT/FILTERED`；同批测试的 `443` 正常连通，作为对照排除了本机网络问题。公网开放端口只剩 `22`、`80`、`443`、`40555`；`6379`、`8080`、`8089`、`9853`、`18080` 全部被拦。
+
+**但绑定并未改动（服务器侧实测）**：
+
+- `ss -ltn` 仍显示 `0.0.0.0:3306`
+- Docker 仍是 `0.0.0.0:3306->3306/tcp`
+- 容器 `1Panel-mysql-BHnV` 创建时间为 `2026-09-28`，**从未重建**
+- 主机 `ufw` inactive，iptables 无 3306 拦截规则
+
+因此当前的拦截**只来自安全组**，属于单层防护。用户实际完成的是安全组那一层。要真正生效，必须在 1Panel 里改端口映射并**重建容器**（这就是没生效的原因：Docker 的端口映射改动只有重建容器才会应用）。
+
+**应用未受影响**：`/api/v1/health` 返回 `database: mysql`、`helper_queue: ready`，`wechat-converter.service` active。
+
+**新发现**：`40555`（`1panel-core`）从公网可达，返回 `HTTP 200 / Access Temporarily Unavailable`——1Panel 的安全入口在起作用，但端口本身开放，建议改绑或加白名单。
+
 ## 工作区
 
 当前分支为 `main`。工作区仅剩用户原有的未跟踪 `.obsidian/`，以及未跟踪的 `resume/`（个人简历与求职分析，**不建议公开**，如需保留请加入 `.gitignore`）。`windows-helper/config.ini`、`miniprogram/config.local.js`、`windows-helper/helper/local_config.py` 按预期被忽略。
