@@ -33,7 +33,9 @@
 
 - [ ] 在微信开发者工具或真机验证 MFLAC、NCM、1 GiB 边界、取消上传和失败提示。
 - [ ] 回归文档转 PDF、媒体播放、保存/重复保存/删除、云盘保存/重命名/删除和历史刷新。
+  - 注意：`504f6d4` 改了音视频打开路径（不再走 `openDocument`），`openResult` 与 `openHistoryFile` 都需真机复核"下载并播放"与历史音频重播。
 - [ ] 检查导航 PNG 在不同屏幕宽度和深色导航栏下的显示比例。
+  - `504f6d4` 已把 `app.json` 导航栏由浅色改为 `#171a2d` + 白色文字，深色导航栏现在成为唯一形态，需一并确认。
 
 ## P0 运维（安全）
 
@@ -58,6 +60,7 @@
 - [x] `mflac-linux-decoder` 的 Python 编译、self-test 和样例 inspect 已通过。
 - [x] 服务端 helper 协议状态机通过 29 项测试：设备注册与撤销、单任务领取、心跳、成功/失败/超时回报、租约过期重试、旧租约被拒、重复完成不产生第二个结果。
 - [x] Windows helper 通过 41 项单元测试与 6 项对真实服务的集成测试。
+- [x] 小程序整页自检修复（2026-10-12，`504f6d4`、`51eaeee`）：音视频误用 `openDocument`、首页写死的 `+ 24.8%` / `99% 服务可用率` 假数据、helper 任务状态残留、导航栏配色不一致、`README.md` 随包上传、`wx.getSavedFileList` 废弃告警。回归测试 `tools/miniprogram-flow.test.js` 11/11 通过（`node tools/miniprogram-flow.test.js`）。
 - [x] 2026-10-12 线上只读巡检：服务 active 2 天、MySQL 已连、3 天内仅 200/422/404 无 5xx、无 traceback、无 OOM；磁盘 23 GiB 可用。
 - [x] 2026-10-12 helper 首次真实联调：39 MB 样例经 operator 端点入队（job 1），helper 领取、下载、判定无密钥后按设计失败并回报 `no_authorized_key_source`；两侧临时文件均已清理，未泄漏密钥。
 - [x] 最近相关提交：`04b4cfb feat: add MFLAC fallback and helper handoff`。

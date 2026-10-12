@@ -88,11 +88,25 @@ helper 协议**已上线并完成首次真实联调**（2026-10-12）。链路�
 
 **已知瑕疵**：一次上传会留下两条历史记录（`helper_queued:` 标记行 + helper 成功行），渲染层已处理显示，记录本身仍重复，记在 `TASKS.md`。
 
-**未验证**：小程序侧只做了代码级与接口级验证，**尚未在微信开发者工具或真机实跑**，因此 202 分支的界面表现未经真机确认。
+## 小程序全页自检修复（2026-10-12，提交 `504f6d4`、`51eaeee`）
+
+对 `pages/index` 做了一次整页排查，每个问题都先用桩化的 `wx` 运行时复现再改，新增回归测试 `tools/miniprogram-flow.test.js`（11 项全通过，`node tools/miniprogram-flow.test.js`）。
+
+**播放链路（`504f6d4`）**：`wx.openDocument` 只能渲染文档与 PDF，之前被误用于音视频，导致两个可见故障 —— 内嵌播放器已出现后仍调 `openDocument`，于是"下载并播放"必定叠加弹一个 `无法打开此文件`；历史记录里的音频点击后直接报 `无法直接打开`，完全放不出来。现在音视频交给工作台播放器，PDF/文档保持原行为。
+
+**假数据（`504f6d4`）**：首页仪表盘把 `+ 24.8%`、`99% 服务可用率` 写死成字面量，配着"你的效率正在上升"和装饰性折线，看上去像在汇报并不存在的分析数据。现已改为真实状态：文件是否就绪、API 是否连通、本机文件真实数量、链接有效期（这个确实是 30 天）。
+
+**状态残留（`504f6d4`）**：上一次上传或切换模式遗留的 helper 任务会继续显示在屏幕上，因为 `startConversion`、`clearFile`、`chooseMode` 只重置了 `result` 没重置 `job`。
+
+**其他（`504f6d4`）**：`app.json` 是浅色导航栏配近黑页面，已统一；`miniprogramRoot` 为 `"./"` 且无忽略规则，`miniprogram/README.md` 被打进了上传包，现经 `packOptions.ignore` 排除（文件保留在仓库，只是不随包上传），流程测试也放在 `tools/` 而非随包发布。
+
+**废弃 API（`51eaeee`）**：`loadSavedFiles` 在 `onLoad` 和切 tab 时各调一次 `wx.getSavedFileList`，开发者工具报两次"即将废弃"。改用 `wx.getFileSystemManager().getSavedFileList`，旧调用仅作为旧基础库的兜底保留。
+
+**未验证**：上述修复经桩化运行时与静态检查验证，**仍未在开发者工具或真机端到端实跑**；上一次会话曾在开发者工具中做自动化驱动的尝试，但在截图脚本刚写好时被中断，未产出结论。
 
 ## 工作区
 
-当前分支为 `main`。相关提交：`aa3c483` 服务端协议、`838ac50` helper、`2c680e3` 巡检记录、`be1c0e0` 配置展开修复。工作区仅剩用户原有的未跟踪 `.obsidian/`；`windows-helper/config.ini` 按预期被忽略。
+当前分支为 `main`。相关提交：`aa3c483` 服务端协议、`838ac50` helper、`504f6d4` 小程序整页修复、`51eaeee` 废弃 API、`2c680e3` 巡检记录、`be1c0e0` 配置展开修复。工作区仅剩用户原有的未跟踪 `.obsidian/`；`windows-helper/config.ini` 按预期被忽略。
 
 本地 Windows 沙箱中发现三个环境级现象，已规避，不影响生产（Linux）：
 
@@ -105,10 +119,9 @@ helper 协议**已上线并完成首次真实联调**（2026-10-12）。链路�
 ## 下一步
 
 1. **取得合法 EKey 或 `player_process_db`，完成真实解码验证**（唯一阻塞项）。
-2. 关闭安全组对 3306 的公网放行，并复核 6379/40555 的绑定方式。
-3. 把 helper 队列接入 `POST /api/v1/convert/media`：本地解码失败且判定为 PC MusicEx 时返回 job id 而不是 422，并让小程序轮询 `GET /api/v1/jobs/{job_id}`。
-4. 完成 `TASKS.md` 中的 P1 验证（开发者工具/真机）和剩余运维项。
-5. 注意 helper 目前只在测试时经 SSH 隧道连通；真实部署到其他 Windows 主机时应使用公网地址 `https://api.yssqi.ccwu.cc`。
+2. 关闭安全组对 3306 的公网放行（其余安全项见 `TASKS.md` 的 P1 运维）。
+3. 完成 `TASKS.md` 中的 P1 验证：开发者工具/真机实跑，以及上面这批小程序修复的端到端确认。
+4. 注意 helper 目前只在测试时经 SSH 隧道连通；真实部署到其他 Windows 主机时应使用公网地址 `https://api.yssqi.ccwu.cc`。
 
 ## 约束
 
