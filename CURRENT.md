@@ -317,6 +317,28 @@ def _process_running(name):
 
 **一次自身失误（已记录）**：为对比修复前后，我用 `git show ... | Set-Content -NoNewline` 取旧版本，PowerShell 把多行**拼接成了一行**，文件被截断。已从 HEAD 恢复，并改用 `git checkout` + 编辑工具重做对比。
 
+## CI 偶发失败：定时敏感的测试（2026-10-12）
+
+**发现**：run #7（提交 `6455b92`，纯文档改动）失败，但**同批测试在 run #3 是绿的**，且这期间**没有任何提交改动 `windows-helper/`**。逐任务核对后确认失败的是 `helper-tests`（windows-latest），而 `server-tests`、`miniprogram-tests`、`docker-build` 均通过。
+
+**排除法**：本地连续运行 6 次助手测试全过、耗时稳定 4.05 秒 → 不是确定性缺陷。原始日志需要登录才能读（注解接口只给到 `exit code 1`）。
+
+**根因（代码层定位）**：3 个 lease keeper 测试依赖**固定短睡眠**等待后台线程，余量极小：
+
+| 测试 | 依赖 | 余量 |
+|---|---|---|
+| `test_lease_keeper_extends_the_lease_while_working` | 睡 0.3s，心跳间隔 0.05s | 尚可 |
+| `test_lease_keeper_marks_the_lease_lost_on_conflict` | 睡 **0.2s** 等 `keeper.lost` | **很薄** |
+| `test_lease_keeper_marks_the_lease_lost_when_revoked` | 睡 **0.2s** 等 `keeper.lost` | **很薄** |
+
+共享 runner 上线程调度延迟几百毫秒是常事，睡 0.2 秒就可能来不及 → 偶发失败。
+
+**修复**：新增模块级 `wait_until(predicate, ceiling=5.0)`，把"睡固定时长后断言"改为"**等到条件成立**，仅在真失败时用上限兜底"。这消除了对调度时序的依赖，同时因为不再空等**反而更快**（本地 4.05s → 3.5s）。本地连续 8 次全过。
+
+**顺带修的**：CI 里 `miniprogram-tests` 的任务名还写着"(11)"，已改为 (13)。
+
+**顺带加的**：助手测试步骤改用 `shell: pwsh`，失败时把具体失败测试**写成 GitHub 注解**。因为原始日志需要登录才能读，而注解可以通过 API 读到——这正是本次排查卡住的地方。已用 PowerShell 语法解析器校验该脚本可解析。
+
 ## 工作区
 
 当前分支为 `main`。工作区仅剩用户原有的未跟踪 `.obsidian/`，以及未跟踪的 `resume/`（个人简历与求职分析，**不建议公开**，如需保留请加入 `.gitignore`）。`windows-helper/config.ini`、`miniprogram/config.local.js`、`windows-helper/helper/local_config.py` 按预期被忽略。

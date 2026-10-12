@@ -61,10 +61,27 @@ jobs:
         # These import only helper.* and the standard library, so they need no
         # extra installation.
         working-directory: windows-helper
-        run: python -m unittest discover -s tests -p "test_helper_units.py" -v
+        shell: pwsh
+        run: |
+          $output = python -m unittest discover -s tests -p "test_helper_units.py" -v 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Host $output
+
+          if ($code -ne 0) {
+            # The raw log needs a logged-in session to read, but annotations are
+            # readable from the API -- which is how the earlier flake here had
+            # to be chased.  Put the failing test into one.
+            $detail = ($output -split "`n" | Select-String -Pattern '^(FAIL|ERROR):' -Context 0,15) -join "`n"
+            if (-not $detail) {
+              $detail = ($output -split "`n" | Select-Object -Last 40) -join "`n"
+            }
+            $escaped = $detail -replace '%', '%25' -replace "`r", '' -replace "`n", '%0A'
+            Write-Host "::error title=Helper tests failed::$escaped"
+            exit 1
+          }
 
   miniprogram-tests:
-    name: Mini program flow tests (11)
+    name: Mini program flow tests (13)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -185,6 +185,22 @@ def make_job(job_id: int = 1, **overrides) -> Job:
     return Job(**params)
 
 
+def wait_until(predicate, ceiling: float = 5.0) -> bool:
+    """Poll until ``predicate`` holds, up to ``ceiling`` seconds.
+
+    The lease-keeper tests exercise a background thread.  A fixed short sleep
+    (a fifth of a second, say) flakes whenever a shared runner is slow to
+    schedule that thread, so they wait for the condition instead and only use
+    the ceiling to bound how long a genuine failure takes to surface.
+    """
+    deadline = time.monotonic() + ceiling
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
 # -- redaction -----------------------------------------------------------
 
 
@@ -598,7 +614,7 @@ class AgentTests(unittest.TestCase):
         credentials = Credentials(device_id="dev_0123456789abcdef", device_token="T" * 43)
         job = make_job(25)
         with LeaseKeeper(client, credentials, job, 0.05):
-            time.sleep(0.3)
+            wait_until(lambda: len(client.heartbeats) >= 2)
         self.assertGreaterEqual(len(client.heartbeats), 2, "the lease must be renewed periodically")
         self.assertTrue(all(job_id == 25 for job_id in client.heartbeats))
 
@@ -614,7 +630,7 @@ class AgentTests(unittest.TestCase):
         credentials = Credentials(device_id="dev_0123456789abcdef", device_token="T" * 43)
         keeper = LeaseKeeper(client, credentials, make_job(26), 0.05)
         with keeper:
-            time.sleep(0.2)
+            wait_until(lambda: keeper.lost)
         self.assertTrue(keeper.lost, "a reassigned job must stop the current attempt")
         self.assertIn("another helper", keeper.last_error)
 
@@ -630,7 +646,7 @@ class AgentTests(unittest.TestCase):
         credentials = Credentials(device_id="dev_0123456789abcdef", device_token="T" * 43)
         keeper = LeaseKeeper(client, credentials, make_job(27), 0.05)
         with keeper:
-            time.sleep(0.2)
+            wait_until(lambda: keeper.lost)
         self.assertTrue(keeper.lost)
 
     def test_agent_skips_reporting_when_the_lease_was_lost(self) -> None:
