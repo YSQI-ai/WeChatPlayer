@@ -2,16 +2,17 @@
 
 ## P0 待真实验证
 
-- [ ] **在真实 Windows + 授权 EKey 环境下验证 `PcV2MusicEx` 解码**
-  - 依赖：Windows 主机、已授权的 QQ 音乐会话、合法 EKey 或导出的 `player_process_db`。
-  - 验收：`python run_helper.py --check` 全绿；`--once` 后样例转出有效 FLAC；密钥不进入小程序、URL、数据库或普通日志。
-  - 前置：服务端已设置 `HELPER_ENROLLMENT_SECRET`（否则 `/api/v1/helper` 返回 503）。
-  - 相关文件：`windows-helper/README.md`、`windows-helper/config.example.ini`。
+- [ ] **取得合法授权密钥来源，完成 `PcV2MusicEx` 真实解码**
+  - 现状：`run_helper.py --check` 已全绿，注册成功（`dev_006f02e375fe2f68`），链路已打通。唯一缺口是密钥。
+  - 实测依据：样例 `cadode - 光の暈.mflac` `--inspect` 结果为 `footer=PcV2MusicEx ekey=no`；全盘搜索 `C:`、`D:` 不存在 `player_process_db`，也无 `.ekey`；QQ 音乐装在 `D:\Program Files (x86)\Tencent\QQMusic\` 但安装目录内无任何 `.db` 密钥文件。
+  - 需要用户提供其一：合法 EKey 字符串（写入 `key_source_path` 指向的文件），或导出的 `player_process_db`。
+  - 验收：样例转出可播放的 FLAC；密钥不进入小程序、URL、数据库或普通日志。
+  - 相关文件：`windows-helper/config.example.ini`、`windows-helper/README.md`。
 
-- [ ] **部署 helper 协议并确认线上可用**
-  - 依赖：服务器 `.env` 写入 `HELPER_ENROLLMENT_SECRET` 并重启 `wechat-converter.service`。
-  - 验收：`curl -fsS https://api.yssqi.ccwu.cc/api/v1/health` 返回 `helper_queue: ready`；MySQL 中已建 `helper_devices` 和 `helper_jobs` 表。
-  - 注意：未配置 MySQL 时队列退回进程内状态，重启即丢失；systemd 已固定 `--workers 1`。
+- [x] **部署 helper 协议并确认线上可用**（2026-10-12 完成）
+  - 服务端 `.env` 已追加 `HELPER_ENROLLMENT_SECRET`，`app/helper_api.py`、`app/helper_store.py`、`app/main.py` 已上传（上传前备份为 `*.bak-20261012-130409`）。
+  - 验收已达成：`GET /api/v1/health` 返回 `helper_queue: ready`；MySQL 已建 `helper_devices`、`helper_jobs`；错误密钥返回 401（而非 503）。
+  - 注意：部署形态是**扁平拷贝**，不是 git 检出，因此用 `scp` 覆盖而非 `git pull`。
 
 ## P1 集成
 
@@ -50,4 +51,5 @@
 - [x] 服务端 helper 协议状态机通过 29 项测试：设备注册与撤销、单任务领取、心跳、成功/失败/超时回报、租约过期重试、旧租约被拒、重复完成不产生第二个结果。
 - [x] Windows helper 通过 41 项单元测试与 6 项对真实服务的集成测试。
 - [x] 2026-10-12 线上只读巡检：服务 active 2 天、MySQL 已连、3 天内仅 200/422/404 无 5xx、无 traceback、无 OOM；磁盘 23 GiB 可用。
+- [x] 2026-10-12 helper 首次真实联调：39 MB 样例经 operator 端点入队（job 1），helper 领取、下载、判定无密钥后按设计失败并回报 `no_authorized_key_source`；两侧临时文件均已清理，未泄漏密钥。
 - [x] 最近相关提交：`04b4cfb feat: add MFLAC fallback and helper handoff`。

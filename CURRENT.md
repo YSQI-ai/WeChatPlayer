@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-P0 开发已完成并提交（`aa3c483`、`838ac50`）。生产环境尚未部署本次改动，helper 未上线。下一次动服务器时，优先处理下面「线上巡检」里 3306 公网暴露的问题。
+helper 协议**已上线并完成首次真实联调**（2026-10-12）。链路从入队到回报全程打通，唯一缺口是**没有合法授权密钥**，因此 PC MusicEx 文件仍解不出 FLAC。下一个动服务器的场合，优先处理「线上巡检」里 3306 公网暴露的问题。
 
 ## 已验证
 
@@ -13,8 +13,24 @@ P0 开发已完成并提交（`aa3c483`、`838ac50`）。生产环境尚未部�
 - 服务器 API health、NCM 转 FLAC、历史和云盘基本流程已完成冒烟验证。
 - 用户样例属于不内嵌 EKey 的 PC `PcV2MusicEx`/`MusicEx`；上传链路正常，但现有 QMC2 返回 `unknown encryption method`。
 - **服务端 helper 协议**：`converter-api/tests/test_helper_protocol.py` 29 项通过，含并发领取唯一性、租约过期重试、旧租约不能覆盖已重分配任务、重复完成只产生一个结果。
-- **Windows helper**：`windows-helper/tests/` 41 项单元测试通过；6 项集成测试用真实 helper 客户端打到真实 uvicorn 服务，覆盖注册、领取、下载、解密、上传、去重、撤销和小程序下载链接。
+- **Windows helper**：`windows-helper/tests/` 42 项单元测试通过；6 项集成测试用真实 helper 客户端打到真实 uvicorn 服务，覆盖注册、领取、下载、解密、上传、去重、撤销和小程序下载链接。
 - 两套测试均以 stdlib `unittest` 运行，不需要 pytest。
+
+## helper 上线与首次真实联调（2026-10-12）
+
+**服务端部署**（写操作，均已备份）：`app/helper_api.py`、`app/helper_store.py`、`app/main.py` 经 `scp` 覆盖上传，上传前核对服务器 `main.py` 与仓库改动前版本**逐字节一致**（1146 行、归一化后 sha256 相同），确认没有需要保留的线上热修。`.env` 追加 `HELPER_ENROLLMENT_SECRET`（只追加，未读取原有内容；权限保持 `640 root:converter`）。重启后：
+
+- `GET /api/v1/health` → `"helper_queue":"ready"`
+- 错误密钥注册 → `401`（而非 `503`），证明协议确实生效
+- MySQL 自动建表 `helper_devices`、`helper_jobs`
+
+**本机 helper**：`--check` 全绿，注册成功为 `dev_006f02e375fe2f68`。因为本机到公网的 HTTPS 被重置（见下），测试改用 `ssh -L 18081:127.0.0.1:18080` 隧道，`config.ini` 里的 `api_base_url` 仍保持生产用的公网地址，隧道只在测试时用 `HELPER_API_BASE_URL` 覆盖。
+
+**端到端**：把 39 MB 的 `cadode - 光の暈.mflac` 经 operator 端点入队为 job 1，helper 领取、下载、判定该文件 `footer=PcV2MusicEx ekey=no` 且无可用密钥来源后，**按设计失败**并回报 `no_authorized_key_source`。小程序侧查询得到 `status: failed` 与可诊断的 `error_message`。两侧临时文件均已清理（本机只剩 `credentials.bin` 与空的 `work/`，服务器无残留 `helper-source-*`），日志中密钥与用户路径被脱敏为 `<redacted>` / `<local-path>`。
+
+**未解决**：全盘搜索 `C:`、`D:` **不存在 `player_process_db`，也没有 `.ekey`**；QQ 音乐装在 `D:\Program Files (x86)\Tencent\QQMusic\`，但安装目录内没有任何 `.db` 密钥文件。因此真实解码仍需用户提供合法 EKey 或导出的 `player_process_db`。
+
+**顺带修掉的 bug**：`configparser` 默认启用 `BasicInterpolation`，遇到 `%LOCALAPPDATA%` 这类路径直接抛 `InterpolationSyntaxError`，而 `config.example.ini` 推荐的正是这种写法 —— 即 helper 用官方示例配置根本起不来。已改为 `interpolation=None`（路径展开本来就由 `_expand()` 负责），并让 `device_name` 也走 `_expand()`。原测试用的是字面量路径，因此漏掉了这个 `%`，已补回归用例。
 
 ## 线上巡检（2026-10-12，只读）
 
@@ -24,7 +40,7 @@ P0 开发已完成并提交（`aa3c483`、`838ac50`）。生产环境尚未部�
 
 - `wechat-converter.service` active 且 enabled，运行 2 天；`curl 127.0.0.1:18080/api/v1/health` 返回 `status: ok`、`database: mysql`。
 - 3 天内响应码只有 200/422/404，**无 5xx**、无 traceback、无 OOM kill；磁盘 23 GiB 可用（40%）。
-- 部署形态是**扁平拷贝而非 git 检出**：`/opt/wechat-converter-api/app/` 只有 `main.py`、`mflac_fallback.py`，**没有 `helper_api.py`/`helper_store.py`**，`.env` 中 `HELPER_ENROLLMENT_SECRET` 行数为 0 —— 与「helper 未部署」一致。因此部署方式应为 `scp` 覆盖 + 重启，而非 `git pull`。
+- 部署形态是**扁平拷贝而非 git 检出**：巡检当时 `/opt/wechat-converter-api/app/` 只有 `main.py`、`mflac_fallback.py`，没有 `helper_api.py`/`helper_store.py`，`.env` 中 `HELPER_ENROLLMENT_SECRET` 行数为 0 —— 与「helper 未部署」一致。因此本次部署用 `scp` 覆盖而非 `git pull`（当天稍后已完成，见下节）。
 - 运行栈为 1Panel + Docker：`1Panel-openresty-iPSG`（80/443）、`1Panel-mysql-BHnV`、`1Panel-redis-4vLB`、Adminer（`127.0.0.1:9853`）、phpMyAdmin（`127.0.0.1:8089`）。
 
 **需要处理**
@@ -50,13 +66,13 @@ P0 开发已完成并提交（`aa3c483`、`838ac50`）。生产环境尚未部�
 
 ## 当前阻塞
 
-实际 `PcV2MusicEx` 解码仍未在真实环境验证：需要一台 Windows 主机、已授权的 QQ Music 会话和合法 EKey。helper 的解码步骤在测试中以替身完成，真实解码路径只验证到「读取操作者授权密钥文件并交给 `qmc_mflac.py`」。
+**只差合法授权密钥。** helper 与服务端链路已全部打通并实测通过，但 `cadode - 光の暈.mflac` 属于 `PcV2MusicEx` 且无内嵌 EKey，而本机不存在任何 `player_process_db` 或 `.ekey`，因此真实解码无法进行。需要用户提供合法 EKey（写入 `key_source_path` 指向的文件，并把 `key_source` 设为 `ekey_file`）或导出的 `player_process_db`（`key_source = player_process_db`）。
 
-部署前必须在服务端设置 `HELPER_ENROLLMENT_SECRET`，否则整个 `/api/v1/helper` 返回 503。
+服务端 `HELPER_ENROLLMENT_SECRET` **已配置**，`/api/v1/helper` 不再返回 503。
 
 ## 工作区
 
-当前分支为 `main`，工作区干净（仅剩用户原有的未跟踪 `.obsidian/`）。P0 改动已分两次提交：`aa3c483` 服务端协议、`838ac50` helper。
+当前分支为 `main`。相关提交：`aa3c483` 服务端协议、`838ac50` helper、`2c680e3` 巡检记录、`be1c0e0` 配置展开修复。工作区仅剩用户原有的未跟踪 `.obsidian/`；`windows-helper/config.ini` 按预期被忽略。
 
 本地 Windows 沙箱中发现三个环境级现象，已规避，不影响生产（Linux）：
 
@@ -68,11 +84,11 @@ P0 开发已完成并提交（`aa3c483`、`838ac50`）。生产环境尚未部�
 
 ## 下一步
 
-1. 关闭安全组对 3306 的公网放行，并复核 6379/40555 的绑定方式。
-2. 在真实 Windows + 授权 EKey 环境下执行 `python run_helper.py --check` 与 `--once`，确认 `PcV2MusicEx` 样例可转出有效 FLAC。
-3. 部署 helper：`scp` 覆盖 `app/helper_api.py`、`app/helper_store.py`、`app/main.py`，在 `.env` 追加 `HELPER_ENROLLMENT_SECRET`，重启并确认 `helper_queue: ready`。
-4. 把 helper 队列接入 `POST /api/v1/convert/media`：本地解码失败且判定为 PC MusicEx 时返回 job id 而不是 422，并让小程序轮询 `GET /api/v1/jobs/{job_id}`。
-5. 完成 `TASKS.md` 中的 P1 验证（开发者工具/真机）和剩余运维项。
+1. **取得合法 EKey 或 `player_process_db`，完成真实解码验证**（唯一阻塞项）。
+2. 关闭安全组对 3306 的公网放行，并复核 6379/40555 的绑定方式。
+3. 把 helper 队列接入 `POST /api/v1/convert/media`：本地解码失败且判定为 PC MusicEx 时返回 job id 而不是 422，并让小程序轮询 `GET /api/v1/jobs/{job_id}`。
+4. 完成 `TASKS.md` 中的 P1 验证（开发者工具/真机）和剩余运维项。
+5. 注意 helper 目前只在测试时经 SSH 隧道连通；真实部署到其他 Windows 主机时应使用公网地址 `https://api.yssqi.ccwu.cc`。
 
 ## 约束
 
