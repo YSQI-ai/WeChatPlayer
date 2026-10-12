@@ -206,6 +206,18 @@ python -m unittest discover -s tests -p "test_helper_integration.py"
 
 覆盖真实客户端到真实 uvicorn 的完整流程：设备注册、领取任务、下载源文件、解密、上传结果、去重、设备撤销，以及小程序下载链接。
 
+### 持续集成
+
+上述检查由 GitHub Actions 在每次 push 与 pull request 时自动执行（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)），共三个任务：
+
+| 任务 | 内容 |
+| --- | --- |
+| Python 测试 | 36 项服务端协议测试 + 42 项助手单元测试 |
+| 小程序流程测试 | 11 项前端流程测试 |
+| 镜像构建 | 构建 Docker 镜像、启动容器、**等待健康检查通过**后才算成功 |
+
+第三个任务不只看"构建成功"——它会把镜像跑起来并轮询 `/api/v1/health`，失败时自动打印容器日志，因为**能构建不代表能运行**。
+
 ### 测试覆盖的关键行为
 
 服务端队列协议测试重点验证状态机的边界情况：
@@ -362,6 +374,24 @@ sudo systemctl enable --now wechat-converter
 ssh -N -L 13306:127.0.0.1:3306 user@your-server
 # 然后本地连接 127.0.0.1:13306
 ```
+
+### Docker / Docker Compose
+
+`converter-api/Dockerfile` 采用两阶段构建：依赖装在 builder 的独立前缀里，只有该前缀被复制进运行镜像，构建工具不进最终产物。运行镜像以非 root 用户启动，并预装 CJK 字体（缺字体会导致中文文档转出的 PDF 全是空白方块）。
+
+服务端与 MySQL 可用 Compose 一并启动：
+
+```bash
+cp .env.example .env      # 填入数据库密码
+docker compose up --build
+```
+
+Compose 中有两处刻意的设计，都是安全考虑：
+
+- **MySQL 不发布任何主机端口**——api 容器经 Compose 网络以服务名 `mysql` 连接，数据库无需对外可达。确实需要图形客户端时，只绑回环：`127.0.0.1:3306:3306`，**不要写 `0.0.0.0`**。
+- **api 发布到 `127.0.0.1:18080`** 而非 `18080`。省略主机 IP 等同于 `0.0.0.0`，会把服务暴露到所在网络。
+
+> 逐行讲解与 CI 说明见 [`docs/docker-and-ci.md`](docs/docker-and-ci.md)。
 
 ---
 

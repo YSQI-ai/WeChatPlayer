@@ -1,0 +1,87 @@
+# Local development stack: the converter API plus the MySQL it needs.
+#
+# Run it with:  docker compose up --build
+#
+# Note there is no "version:" key at the top.  It has been obsolete since
+# Compose v2 (2021); keeping it only produces a warning.
+
+services:
+  api:
+    build:
+      context: ./converter-api
+    image: wechat-converter-api:local
+
+    # Bound to 127.0.0.1 on purpose.  "18080:18080" would mean 0.0.0.0 and
+    # publish the API to every interface, including the network you are on.
+    # This mirrors production, where the service listens on loopback only and
+    # Nginx is what faces the internet.
+    ports:
+      - "127.0.0.1:18080:18080"
+
+    environment:
+      # Inside a Compose network, containers reach each other by service name,
+      # so this is "mysql" -- not 127.0.0.1, which would mean the api container
+      # itself.
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-wechat_converter}
+      MYSQL_USER: ${MYSQL_USER:-wechat_converter}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env (copy .env.example)}
+
+      MAX_UPLOAD_BYTES: "1073741824"
+      CONVERSION_TIMEOUT_SECONDS: "600"
+      MAX_CONCURRENT_JOBS: "2"
+
+      # Left empty deliberately: this turns the private helper queue off, so the
+      # dev stack never exposes an unauthenticated work queue.
+      HELPER_ENROLLMENT_SECRET: ""
+
+    volumes:
+      # Per-request conversion scratch space.  A named volume keeps it off the
+      # host and gives the non-root container user a path it owns.
+      - conversion-tmp:/var/lib/wechat-converter
+
+    depends_on:
+      mysql:
+        # Wait for the healthcheck, not merely for the container to start:
+        # MySQL accepts connections several seconds after it is "running".
+        condition: service_healthy
+
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env (copy .env.example)}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-wechat_converter}
+      MYSQL_USER: ${MYSQL_USER:-wechat_converter}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env (copy .env.example)}
+
+    # No "ports:" here at all, and that is the point.  The api container reaches
+    # MySQL over the Compose network by service name, so the database never
+    # needs to be reachable from outside the stack.  Publishing it is how a
+    # database ends up answering handshakes from the public internet.
+    #
+    # If you genuinely need a GUI client on the host to reach it, publish on
+    # loopback only -- never 0.0.0.0:
+    #
+    # ports:
+    #   - "127.0.0.1:3306:3306"
+
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+    healthcheck:
+      # $$ escapes the variable so Compose passes it through to the shell inside
+      # the container instead of substituting it here.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+    restart: unless-stopped
+
+volumes:
+  conversion-tmp:
+  mysql-data:

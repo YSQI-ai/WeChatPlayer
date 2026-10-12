@@ -30,6 +30,11 @@
 
 ## P1 验证
 
+- [ ] **推送后确认 CI 三个任务全绿**（尤其 `docker-build`）。
+  - 已校验：`docker compose config` 完整解析通过、YAML 语法有效、Dockerfile 引用的路径均存在、运行时唯一可写路径已在镜像中创建授权。
+  - **未校验**：镜像能否真正构建、容器能否提供服务——本机 Docker 引擎起不来（WSL2 报"当前计算机配置不支持 WSL2"，需启用「虚拟机平台」并在 BIOS 开启虚拟化后重启）。
+  - 验收：GitHub Actions 上 `docker-build` 任务通过（它会真实构建镜像、启动容器并轮询 `/api/v1/health`）。
+- [ ] **本机 Docker 修复后实测 compose 全流程**：`cp .env.example .env` → `docker compose up --build` → `curl 127.0.0.1:18080/api/v1/health`。
 - [ ] 在微信开发者工具或真机验证 MFLAC、NCM、1 GiB 边界、取消上传和失败提示。
 - [ ] 回归文档转 PDF、媒体播放、保存/重复保存/删除、云盘保存/重命名/删除和历史刷新。
   - 注意：`504f6d4` 改了音视频打开路径（不再走 `openDocument`），`openResult` 与 `openHistoryFile` 都需真机复核"下载并播放"与历史音频重播。

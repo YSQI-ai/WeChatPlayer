@@ -189,6 +189,36 @@ helper 协议**已上线并完成首次真实联调**（2026-10-12）。链路�
 
 **同类问题仍未修**：Redis（`HOST_IP=''`，实测 `0.0.0.0:6379`）与 1Panel 面板自身（`40555`，公网可达）。面板不是 1Panel 应用，不能用 `HOST_IP` 修，需在面板设置里配安全入口/授权 IP 或加安全组白名单。
 
+## 运维化改造：Docker + CI（2026-10-12）
+
+按「方向选择与项目建议」的结论，为项目补上运维外壳，使同一个项目可以按运维方向讲述。
+
+**新增文件**：`converter-api/Dockerfile`、`converter-api/.dockerignore`、`docker-compose.yml`、根 `.env.example`（供 Compose 用）、`.github/workflows/ci.yml`、`docs/docker-and-ci.md`。
+
+**Dockerfile 的取舍**：两阶段构建（依赖装进 builder 的独立前缀，只复制该前缀）；文档转换只装 `libreoffice-writer` 而非完整 `libreoffice` 元包；**预装 `fonts-noto-cjk`**（缺字体时中文 PDF 全是空白方块，这是本项目特有的必要项）；非 root 用户（uid 10001）运行，因为服务要用子进程解析不可信的上传文件。
+
+**Compose 的两处安全设计**（复刻 3306 事故的教训）：MySQL **完全不发布主机端口**，api 经 Compose 网络按服务名 `mysql` 连接；api 只绑 `127.0.0.1:18080`，不写裸 `18080`（省略主机 IP 就等于 `0.0.0.0`）。
+
+**CI**：三个任务——Python 测试（36+42）、小程序流程测试（11）、**镜像构建 + 启动容器 + 等待健康检查通过**。第三个任务刻意不只做构建，因为"能构建"不等于"能运行"。
+
+**⚠️ 验证状态（重要）**：
+
+- ✅ **已验证**：`docker compose config` 完整解析通过（该命令不需要引擎），确认**没有任何服务绑定 `0.0.0.0`**、健康检查字符串、卷映射、`depends_on` 条件均正确；`docker-compose.yml` 与 `ci.yml` 的 YAML 语法校验通过；Dockerfile 中 `COPY` 引用的路径逐一确认存在；确认运行时唯一需要的可写路径（`CONVERTER_TMP_ROOT`，`download_dir` 也派生自它）已在镜像中创建并授权。
+- ❌ **未验证**：**镜像能否真正构建成功、容器能否正常提供服务，本机没有任何证据**。本机 Docker 引擎无法启动，原因见下节。**不要当作已验证**。推送后由 CI 的 `docker-build` 任务在 GitHub runner 上完成真实构建与启动验证（该路径不依赖本机 Docker）。
+
+## 本机 Docker 不可用（2026-10-12 发现）
+
+本机 Docker Desktop 无法工作，`docker info` 全程返回 500：
+
+```
+WSL 报错：当前计算机配置不支持 WSL2。
+请启用"虚拟机平台"功能，并确保在 BIOS 中启用虚拟化。
+```
+
+`docker-desktop` WSL 发行版为 Stopped，`wsl -d docker-desktop` 报 `HCS_E_SERVICE_NOT_AVAILABLE`，`com.docker.service` 为 Stopped。故本机**无法构建或运行任何镜像**。修复需要启用 Windows「虚拟机平台」功能并在 BIOS 开启虚拟化后重启——属于用户的机器配置，未代为改动。
+
+另记一次自身失误：启动 Docker Desktop 后我用 `docker info ... 2>$null` 加 `$LASTEXITCODE` 判断"就绪"，**把错误信息重定向掉了，因此误判为已就绪**，随后的构建才暴露问题。正确的就绪判据是拿到非空的 `ServerVersion`。
+
 ## 工作区
 
 当前分支为 `main`。工作区仅剩用户原有的未跟踪 `.obsidian/`，以及未跟踪的 `resume/`（个人简历与求职分析，**不建议公开**，如需保留请加入 `.gitignore`）。`windows-helper/config.ini`、`miniprogram/config.local.js`、`windows-helper/helper/local_config.py` 按预期被忽略。

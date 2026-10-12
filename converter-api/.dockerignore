@@ -1,0 +1,24 @@
+# Keep the build context small and make sure nothing secret or machine-local
+# reaches the image.
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtualenvs are rebuilt from requirements.txt inside the image.
+.venv/
+venv/
+
+# Real credentials and machine-local config must never be baked into an image.
+.env
+*.log
+
+# Tests and docs are not needed to run the service; CI runs them against the
+# source tree instead.
+tests/
+README.md
+
+# Local scratch output.
+*.pdf
+*.mp3
+*.mp4

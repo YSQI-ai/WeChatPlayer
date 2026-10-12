@@ -1,0 +1,102 @@
+name: CI
+
+# Run on every push to main and on every pull request, so the tests report on
+# the change rather than on someone remembering to run them.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push supersedes an in-flight run on the same branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-tests:
+    name: Python tests (78)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: converter-api/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r converter-api/requirements.txt
+
+      - name: Server helper-protocol tests (36)
+        # The tests import app.main, which needs a writable conversion root.
+        # Point it at the runner's temp dir instead of the production path.
+        working-directory: converter-api
+        env:
+          CONVERTER_TMP_ROOT: ${{ runner.temp }}/wechat-converter
+        run: python -m unittest discover -s tests -p "test_helper_protocol.py" -v
+
+      - name: Windows helper unit tests (42)
+        # These import only helper.* and the standard library, so they need no
+        # extra installation.
+        working-directory: windows-helper
+        run: python -m unittest discover -s tests -p "test_helper_units.py" -v
+
+  miniprogram-tests:
+    name: Mini program flow tests (11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Flow tests
+        # Stubs the wx runtime and uses only Node built-ins, so there is nothing
+        # to install.
+        run: node tools/miniprogram-flow.test.js
+
+  docker-build:
+    name: Docker image builds and serves
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./converter-api
+          push: false
+          load: true
+          tags: wechat-converter-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start the image and wait for health
+        # A build that succeeds but produces a container that never serves is
+        # still a broken image, so check that it actually answers.
+        run: |
+          docker run -d --name api -p 18080:18080 wechat-converter-api:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/api/v1/health; then
+              echo
+              echo "health endpoint answered after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "health check never succeeded; container logs follow"
+          docker logs api
+          exit 1
+
+      - name: Show image size
+        if: always()
+        run: docker images wechat-converter-api:ci
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs api || true
