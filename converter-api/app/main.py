@@ -25,24 +25,16 @@ from starlette.background import BackgroundTask
 
 try:
     from .mflac_fallback import (
-        HelperRequiredError,
         MflacDecodeError,
         decode_mflac,
-        requires_helper,
+        key_is_external,
     )
 except ImportError:  # pragma: no cover - supports running main.py directly
     from app.mflac_fallback import (  # type: ignore[no-redef]
-        HelperRequiredError,
         MflacDecodeError,
         decode_mflac,
-        requires_helper,
+        key_is_external,
     )
-
-try:
-    from . import helper_api, helper_store
-except ImportError:  # pragma: no cover - supports running main.py directly
-    import helper_api  # type: ignore[no-redef]
-    import helper_store  # type: ignore[no-redef]
 
 try:
     import pymysql
@@ -74,13 +66,6 @@ MYSQL_CONNECT_TIMEOUT = int(os.getenv("MYSQL_CONNECT_TIMEOUT", "5"))
 logger = logging.getLogger(SERVICE_NAME)
 conversion_slots = threading.BoundedSemaphore(MAX_CONCURRENT_JOBS)
 database_ready = False
-
-# Private helper queue. The protocol stays disabled unless
-# HELPER_ENROLLMENT_SECRET is configured, so a default deployment exposes no
-# unauthenticated work queue. Job state prefers MySQL; the in-memory store is a
-# single-process fallback for local runs only.
-helper_settings = helper_api.HelperSettings.from_env(TMP_ROOT)
-helper_queue_ready = False
 
 CONVERSION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversion_records (
@@ -644,37 +629,6 @@ def _store_download(
     return selected_token
 
 
-def _publish_helper_result(
-    *,
-    job_dir: Path,
-    output_path: Path,
-    filename: str,
-    source_filename: str,
-    client_id: str,
-    media_type: str,
-    token: str,
-    extra_metadata: dict[str, object] | None = None,
-) -> int:
-    """Publish a helper-produced audio file as a normal conversion result.
-
-    Reusing the standard download directory means Mini Program history, expiry
-    and cloud-save all work for helper results without a second code path.
-    """
-    size_bytes = output_path.stat().st_size
-    record_id = _db_create_conversion(client_id, source_filename, "flac")
-    _store_download(
-        output_path,
-        job_dir,
-        filename,
-        client_id,
-        media_type,
-        token=token,
-        extra_metadata=extra_metadata,
-    )
-    _db_complete_conversion(record_id, token, filename, media_type, size_bytes)
-    return size_bytes
-
-
 def _resolve_download(token: str) -> tuple[Path, str, Path]:
     if not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
         raise HTTPException(status_code=404, detail="Download link not found or expired")
@@ -816,12 +770,15 @@ def _decode_encrypted_media(job_dir: Path, input_path: Path, input_extension: st
             try:
                 decode_mflac(input_path, output_path)
             except (MflacDecodeError, OSError) as fallback_exc:
-                # A container with no embedded EKey cannot be opened by any
-                # purely offline method: its per-file key is issued by QQ Music
-                # to an authorized client.  Signal that so the caller can hand
-                # the untouched upload to the helper queue.
-                if requires_helper(input_path):
-                    raise HelperRequiredError(str(fallback_exc)) from fallback_exc
+                # No offline method can open a container whose per-file key is
+                # issued by the vendor to an authorized client: the key is not
+                # in the file at all.  Report that as a plain conversion failure
+                # so the client learns the file is unsupported.
+                if key_is_external(input_path):
+                    raise ConversionFailed(
+                        "This container carries no key: its per-file key is issued by the "
+                        "vendor to an authorized client and cannot be derived from the file."
+                    ) from fallback_exc
                 raise ConversionFailed(f"MFLAC fallback decoder failed: {fallback_exc}") from fallback_exc
         if not output_path.exists() or output_path.stat().st_size == 0:
             raise ConversionFailed("The MFLAC decoder did not produce an output file")
@@ -873,64 +830,19 @@ async def _cleanup_downloads_periodically() -> None:
         _cleanup_expired_downloads()
 
 
-async def _maintain_helper_queue() -> None:
-    """Expire helper leases and drop staged sources of finished jobs.
-
-    Reclaiming here as well as on claim means a job whose helper died becomes
-    claimable even while no helper is polling for work.
-    """
-    interval = max(30, helper_settings.lease_seconds // 3)
-    while True:
-        await asyncio.sleep(interval)
-        try:
-            requeued, timed_out = helper_store_impl.reconcile_expired()
-            if requeued or timed_out:
-                logger.info("Helper lease reconciliation: requeued=%s timed_out=%s", requeued, timed_out)
-            removed = helper_api.cleanup_expired_sources(helper_store_impl, helper_settings)
-            if removed:
-                logger.info("Removed %s finished helper source directories", removed)
-        except Exception:
-            logger.exception("Helper queue maintenance failed")
-
-
 @asynccontextmanager
 async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
-    global database_ready, helper_queue_ready
+    global database_ready
     database_ready = _db_initialize()
-    if helper_settings.enabled:
-        try:
-            helper_store_impl.ensure_schema()
-            helper_queue_ready = True
-            if isinstance(helper_store_impl, helper_store.MemoryHelperStore):
-                logger.warning(
-                    "Helper queue is using in-process state; jobs will not survive a restart. "
-                    "Configure MySQL for durable helper jobs."
-                )
-        except Exception:
-            logger.exception("Could not initialize the helper queue schema")
-    else:
-        logger.info("Helper protocol is disabled (HELPER_ENROLLMENT_SECRET is not set)")
 
     cleanup_task = asyncio.create_task(_cleanup_downloads_periodically())
-    helper_task = asyncio.create_task(_maintain_helper_queue()) if helper_queue_ready else None
     try:
         yield
     finally:
-        for task in (cleanup_task, helper_task):
-            if task is None:
-                continue
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+        cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup_task
 
-
-# Job state prefers MySQL so an interrupted helper job survives a restart; the
-# in-memory store is only a single-process fallback for local runs.
-helper_store_impl: helper_store.HelperStore = (
-    helper_store.MySqlHelperStore(_db_connect)
-    if (pymysql is not None and MYSQL_PASSWORD)
-    else helper_store.MemoryHelperStore()
-)
 
 app = FastAPI(
     title="WeChat Converter API",
@@ -946,22 +858,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# The private helper protocol and the Mini Program facing job status endpoint.
-app.include_router(
-    helper_api.build_router(
-        store=helper_store_impl,
-        settings=helper_settings,
-        publish_result=_publish_helper_result,
-    )
-)
-app.include_router(helper_api.build_client_router(store=helper_store_impl))
-
-
-def _helper_state() -> str:
-    if not helper_settings.enabled:
-        return "disabled"
-    return "ready" if helper_queue_ready else "unavailable"
-
 
 @app.get("/api/v1/health")
 def health() -> dict[str, object]:
@@ -971,7 +867,6 @@ def health() -> dict[str, object]:
         "version": SERVICE_VERSION,
         "max_upload_bytes": MAX_UPLOAD_BYTES,
         "database": "mysql" if database_ready else "unavailable",
-        "helper_queue": _helper_state(),
     }
 
 
@@ -988,12 +883,6 @@ def test_endpoint() -> dict[str, object]:
         "media_formats": sorted(MEDIA_PROFILES),
         "media_input_extensions": sorted(MEDIA_INPUT_EXTENSIONS),
         "max_upload_bytes": MAX_UPLOAD_BYTES,
-        "helper_queue": _helper_state(),
-        "helper_endpoints": {
-            "enqueue": "POST /api/v1/helper/jobs",
-            "claim": "POST /api/v1/helper/jobs/claim",
-            "job_status": "GET /api/v1/jobs/{job_id}?client_id=...",
-        },
     }
 
 
@@ -1104,53 +993,6 @@ def media_convert(
             )
         _db_complete_conversion(record_id, None, download_name, media_type, size_bytes)
         return _file_response(output_path, media_type, download_name, job_dir)
-    except HelperRequiredError as exc:
-        # The upload carries no EKey, so no offline decoder can open it.  Hand
-        # the untouched file to the helper queue and let the client poll, rather
-        # than failing an upload that a helper could still complete.
-        logger.info("MFLAC container needs the helper queue: %s", exc)
-        if not (helper_queue_ready and helper_settings.enabled):
-            message = (
-                "This MFLAC container has no embedded EKey, so decoding it needs an "
-                "authorized Windows helper, and the helper queue is not enabled on "
-                "this server."
-            )
-            _db_fail_conversion(record_id, message)
-            _handle_failure(job_dir, ConversionFailed(message))
-            raise AssertionError("unreachable")
-        try:
-            queued = helper_api.enqueue_existing_file(
-                store=helper_store_impl,
-                settings=helper_settings,
-                source_path=input_path,
-                source_filename=file.filename or "upload.mflac",
-                client_id=client_id,
-                reason="missing_ekey",
-                target_format="flac",
-                output_name=output_name,
-            )
-        except helper_api.HelperEnqueueError as enqueue_exc:
-            message = f"Could not queue the file for the helper: {enqueue_exc}"
-            _db_fail_conversion(record_id, message)
-            _handle_failure(job_dir, ConversionFailed(message))
-            raise AssertionError("unreachable")
-        # The upload row is closed with a marker instead of a real failure; the
-        # successful record is created when the helper publishes its result, so
-        # clients should treat a "helper_queued:" row as still in progress.
-        _db_fail_conversion(record_id, f"helper_queued:{queued['job_id']}")
-        _remove_job_dir(job_dir)
-        return JSONResponse(
-            status_code=202,
-            content={
-                "status": "queued",
-                "job_id": queued["job_id"],
-                "created": queued["created"],
-                "status_url": f"/api/v1/jobs/{queued['job_id']}?client_id={client_id}",
-                "filename": _output_name(output_name, file.filename, "flac"),
-                "message": "Queued for an authorized helper; poll status_url for the download link.",
-            },
-        )
-
     except (UploadTooLarge, ConversionFailed, ValueError) as exc:
         _db_fail_conversion(record_id, str(exc))
         _handle_failure(job_dir, exc)

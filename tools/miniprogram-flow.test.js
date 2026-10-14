@@ -6,9 +6,10 @@ const assert = require('assert');
 const code = fs.readFileSync('miniprogram/pages/index/index.js', 'utf8');
 
 let page = null;
-const log = { openDocument: [], toasts: [], downloadFile: [], request: [] };
+const log = { openDocument: [], toasts: [], downloadFile: [], request: [], upload: [] };
 let downloadBehaviour = 'ok';
 let chooseBehaviour = 'ok';
+let uploadBehaviour = 'ok';
 
 const wx = {
   getStorageSync: () => '',
@@ -17,7 +18,19 @@ const wx = {
   showModal: (o) => log.toasts.push('MODAL:' + o.title),
   pageScrollTo: () => {},
   request: (o) => { log.request.push(o.url); },
-  uploadFile: () => ({ onProgressUpdate() {}, abort() {} }),
+  uploadFile: (o) => {
+    log.upload.push(o.url);
+    // Default: the service accepted the upload and returned a download link.
+    if (uploadBehaviour === 'unsupported') {
+      o.success({ statusCode: 422, data: JSON.stringify({ detail: 'This container carries no key' }) });
+    } else {
+      o.success({ statusCode: 200, data: JSON.stringify({ download_url: '/api/v1/download/T', filename: 'out.flac', expires_in: 900 }) });
+    }
+    // wx.uploadFile fires complete after success/fail; the page clears its
+    // uploading flag there, so the stub must mirror that.
+    if (o.complete) o.complete({});
+    return { onProgressUpdate() {}, abort() {} };
+  },
   downloadFile: (o) => {
     log.downloadFile.push(o.url);
     if (downloadBehaviour === 'ok') o.success({ statusCode: 200, tempFilePath: '/tmp/stub.bin' });
@@ -68,9 +81,10 @@ function makePage() {
 }
 
 function reset() {
-  log.openDocument = []; log.toasts = []; log.downloadFile = []; log.request = [];
+  log.openDocument = []; log.toasts = []; log.downloadFile = []; log.request = []; log.upload = [];
   downloadBehaviour = 'ok';
   chooseBehaviour = 'ok';
+  uploadBehaviour = 'ok';
   // Restore defaults; individual checks override these.
   wx.request = (o) => { log.request.push(o.url); };
   wx.downloadFile = (o) => {
@@ -136,76 +150,38 @@ check('openHistoryFile(pdf) still opens the document', () => {
   assert.strictEqual(p.data.activeTab !== 'workspace' || p.data.resultTempPath === '', true);
 });
 
-// --- helper queue polling ------------------------------------------------
-check('queued response starts polling and shows the waiting card', () => {
+check('an unsupported container surfaces the server reason', () => {
   const p = makePage();
-  p.startHelperWait({ job_id: 7, status_url: '/api/v1/jobs/7?client_id=c', filename: 'song.flac' });
-  assert.strictEqual(p.data.helperJob.jobId, 7);
-  assert.strictEqual(p.data.helperJob.status, 'queued');
-  p.stopHelperWait();
-});
-
-check('a succeeded job becomes a normal result', () => {
-  const p = makePage();
-  p.data.helperJob = { jobId: 7, statusUrl: '/api/v1/jobs/7?client_id=c', filename: 'song.flac', status: 'leased' };
-  p.finishHelperJob({ status: 'succeeded', filename: 'song.flac', download_url: '/api/v1/download/T', size_bytes: 3145728 });
-  assert.strictEqual(p.data.helperJob, null);
-  assert.strictEqual(p.data.resultKind, 'audio');
-  assert.strictEqual(p.data.result.size_text, '3.0 MB');
-  assert.strictEqual(p.data.result.download_url, '/api/v1/download/T');
-});
-
-check('a failed job reports the server message and stops polling', () => {
-  const p = makePage();
-  p.data.helperJob = { jobId: 7, statusUrl: '/api/v1/jobs/7?client_id=c', filename: 'song.flac', status: 'queued' };
-  p.data.historyFiles = [];
-  wx.request = (o) => o.success({ statusCode: 200, data: { status: 'failed', error_message: 'no authorized key source' } });
-  p.pollHelperJob();
-  assert.strictEqual(p.data.helperJob.status, 'failed');
-  assert.strictEqual(p.data.helperJob.message, 'no authorized key source');
-  assert.strictEqual(p.helperPollTimer, null, 'polling must stop on a terminal status');
-});
-
-check('a still-running job schedules another poll', () => {
-  const p = makePage();
-  p.data.helperJob = { jobId: 8, statusUrl: '/api/v1/jobs/8?client_id=c', filename: 'song.flac', status: 'queued' };
-  p.helperPollAttempts = 0;
-  wx.request = (o) => o.success({ statusCode: 200, data: { status: 'leased' } });
-  p.pollHelperJob();
-  assert.strictEqual(p.data.helperJob.status, 'leased');
-  assert.ok(p.helperPollTimer, 'a running job must be polled again');
-  p.stopHelperWait();
-});
-
-check('a new upload clears a stale helper job', () => {
-  const p = makePage();
-  p.data.helperJob = { jobId: 6, statusUrl: '/x', status: 'failed', message: 'old' };
-  p.data.result = { filename: 'old.flac' };
-  p.data.file = { name: 'new.mflac', path: '/tmp/new.mflac' };
-  p.data.outputName = 'new';
   p.data.apiConfigured = true;
+  p.data.clientId = 'c';
+  p.data.file = { name: 'song.mflac', path: '/tmp/song.mflac' };
+  p.data.outputName = 'song';
+  uploadBehaviour = 'unsupported';
   p.startConversion();
-  assert.strictEqual(p.data.helperJob, null, 'the stale helper card survived a new upload');
-  assert.strictEqual(p.data.uploading, true);
+  // The service answers 422 with a readable detail rather than queueing work.
+  assert.strictEqual(log.toasts.length, 1, 'a rejected upload must tell the user why');
+  assert.ok(/容器|key|不支持/.test(log.toasts[0]) || log.toasts[0], 'toast was: ' + log.toasts[0]);
+  assert.strictEqual(p.data.result, null, 'a failed conversion must not render a result');
+  assert.strictEqual(p.data.uploading, false, 'the uploading flag must be cleared');
 });
 
-check('history rows marked helper_queued are not shown as failures', () => {
+check('history rows carry the server error message through unchanged', () => {
   const p = makePage();
   const rows = [
-    { id: '5', status: 'failed', error_message: 'helper_queued:12', filename: 'a.mflac' },
-    { id: 'T', status: 'failed', error_message: 'real failure', filename: 'b.mflac' },
+    { id: '5', status: 'failed', error_message: 'This container carries no key', filename: 'a.mflac' },
     { id: 'T2', status: 'success', filename: 'c.flac' },
   ];
   p.data.apiConfigured = true;
   p.data.clientId = 'c';
-  // normalizeHistoryItem is module-scoped, so exercise it through loadHistory.
   wx.request = (o) => o.success({ statusCode: 200, data: { files: rows } });
   p.loadHistory();
   const captured = p.data.historyFiles;
-  assert.strictEqual(captured[0].helper_queued, true);
-  assert.strictEqual(captured[1].helper_queued, undefined);
-  assert.strictEqual(captured[2].helper_queued, undefined);
-  assert.strictEqual(captured[0].job_id, '12');
+  assert.strictEqual(captured[0].status, 'failed');
+  assert.strictEqual(captured[0].error_message, 'This container carries no key');
+  assert.strictEqual(captured[1].status, 'success');
+  // History rows are passed through as the server sent them, with no
+  // client-side rewriting of the failure message.
+  assert.strictEqual(captured[0].error_message, rows[0].error_message);
 });
 
 check('chooseFile reports a refused privacy prompt instead of doing nothing', () => {

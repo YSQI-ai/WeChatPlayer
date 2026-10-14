@@ -32,10 +32,6 @@ services:
       CONVERSION_TIMEOUT_SECONDS: "600"
       MAX_CONCURRENT_JOBS: "2"
 
-      # Left empty deliberately: this turns the private helper queue off, so the
-      # dev stack never exposes an unauthenticated work queue.
-      HELPER_ENROLLMENT_SECRET: ""
-
     volumes:
       # Per-request conversion scratch space.  A named volume keeps it off the
       # host and gives the non-root container user a path it owns.

@@ -21,14 +21,43 @@ windows-helper/config.ini
 windows-helper/state/
 *.ekey
 
+# The Windows helper and its private work queue are retired: the per-file key
+# such containers need is issued by the vendor to an authorized client and is
+# not in the file, so no local component can obtain it.  The implementation is
+# kept on disk for reference but is no longer part of the published project.
+windows-helper/
+converter-api/app/helper_api.py
+converter-api/app/helper_store.py
+converter-api/tests/test_helper_protocol.py
+
+# Its only consumer was the helper-protocol suite above: this file exists to pull
+# in httpx so that fastapi.testclient can be imported.
+converter-api/requirements-dev.txt
+
+# Internal working documents: agent instructions, session context, project
+# state, task lists and status notes.  These describe how the repository is
+# maintained rather than what it does, and some record server exposure and
+# work-in-progress security items.  They stay local.
+AGENTS.md
+context.md
+CURRENT.md
+PROJECT.md
+TASKS.md
+docs/archive/
+docs/decisions/003-context-workflow.md
+docs/decisions/004-helper-protocol.md
+
 # Exported conversation logs and their attachments are session artifacts, not
 # project sources.  The name carries a per-session id, so match the prefix.
 dsh-session-*/
 
+# Editor and scratch state from local tooling.
+.obsidian/
+.acl-recovery/
+
 # Local endpoint overrides.  The deployed host stays out of the published
 # repository; copy the matching *.example.* file to create your own.
 miniprogram/config.local.js
-windows-helper/helper/local_config.py
 
 # Personal job-search material: resumes and the market analysis behind them.
 # This is a project repository; the folder is kept locally and is not part of

@@ -24,18 +24,13 @@ FOOTER_MARKERS = {
 }
 
 #: Containers that never carry an embedded EKey.  Their per-file key comes from
-#: QQ Music's servers after account authorization, so nothing in the file can
-#: recover it: the mask fallback below cannot help, only a helper that holds an
-#: authorized key can.
+#: the vendor's servers after account authorization, so nothing in the file can
+#: recover it: the mask fallback below cannot help.
 KEYLESS_CONTAINERS = frozenset({"PcV2MusicEx"})
 
 
 class MflacDecodeError(Exception):
     """Raised when an MFLAC mask cannot be detected or decoded."""
-
-
-class HelperRequiredError(MflacDecodeError):
-    """Raised when only an authorized external key can decode this file."""
 
 
 def detect_container(input_path: Path) -> str:
@@ -55,8 +50,8 @@ def detect_container(input_path: Path) -> str:
     return "unknown"
 
 
-def requires_helper(input_path: Path) -> bool:
-    """True when the file needs an authorized key the server cannot obtain."""
+def key_is_external(input_path: Path) -> bool:
+    """True when the file's key is issued externally and cannot be derived."""
 
     return detect_container(input_path) in KEYLESS_CONTAINERS
 
